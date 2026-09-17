@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.env*
+*.token
+secrets/
+outputs/
+checkpoints/
+live-test-report.json
