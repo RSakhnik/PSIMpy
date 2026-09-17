@@ -1,8 +1,7 @@
 # Python-клиент BIM Bridge
 
 Модули для обращения к BIM Workers Manager из Python и Google Colab.
-Python 3.10 или новее. Сторонние библиотеки для работы клиента не нужны.
-Проект можно опубликовать в собственном GitHub-репозитории.
+Python 3.10 или новее.
 
 ## Подключение в Colab
 
@@ -295,6 +294,3 @@ python -m unittest discover -s tests -v
 ```text
 python -m pip wheel . --no-deps --wheel-dir dist
 ```
-
-Публикация в GitHub не выполняется автоматически. Перед публикацией проверьте
-состав файлов. В `.gitignore` исключены секреты, выгрузки и checkpoints.
