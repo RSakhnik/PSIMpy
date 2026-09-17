@@ -294,6 +294,3 @@ python -m unittest discover -s tests -v
 ```text
 python -m pip wheel . --no-deps --wheel-dir dist
 ```
-
-Публикация в GitHub не выполняется автоматически. Перед публикацией проверьте
-состав файлов. В `.gitignore` исключены секреты, выгрузки и checkpoints.
