@@ -8,6 +8,8 @@ from .transport import Transport
 from .types import Condition, guid, utc, element_payload
 
 CAPABILITIES = {"get-model-context": "model-context", "model-context": "model-context",
+                "get-element-spatial-data": "element-spatial-data",
+                "diagnose-element-spatial-data": "spatial-diagnostics",
                 "echo": "diagnostics", "delay": "diagnostics",
                 "generate-test-result": "diagnostics", "fail-test": "diagnostics"}
 FAILED_STATES = {"FAILED", "CANCELED", "CANCELLED", "ABANDONED", "EXPIRED"}
@@ -100,7 +102,7 @@ class BimBridge:
         return self.run("get-model-context", {}, **options)
     get_model_context = model_context
     def search_elements(self, model_key, conditions, *, part_ids=None,
-                        logical_operator="And", max_results=10000, **options):
+                        logical_operator="And", max_results=10000, model_version_utc=None, **options):
         if not conditions:
             raise ValueError("Нужно условие. Для всех элементов используйте iter_search_elements")
         payload = {"TargetModelKey": guid(model_key),
@@ -108,21 +110,36 @@ class BimBridge:
                    "LogicalOperator": logical_operator, "MaxResults": max_results}
         if part_ids is not None:
             payload["TargetModelPartIds"] = [guid(p) for p in part_ids]
+        if model_version_utc is not None:
+            payload["ModelVersionUtc"] = utc(model_version_utc)
         return self.run("search-elements", payload, target_model_key=model_key, **options)
-    def load_properties(self, model_key, elements, *, property_names=None, batch_size=100, **options):
-        return self.run("load-element-properties", {"TargetModelKey": guid(model_key),
+    def load_properties(self, model_key, elements, *, property_names=None, batch_size=100, model_version_utc=None, **options):
+        payload = {"TargetModelKey": guid(model_key),
                         "ElementIds": [element_payload(e) for e in elements],
-                        "PropertyNames": property_names, "BatchSize": batch_size}, target_model_key=model_key, **options)
+                        "PropertyNames": property_names, "BatchSize": batch_size}
+        if model_version_utc is not None:
+            payload["ModelVersionUtc"] = utc(model_version_utc)
+        return self.run("load-element-properties", payload, target_model_key=model_key, **options)
     load_element_properties = load_properties
     def get_relations(self, model_key, elements, *, include_parent=True,
-                      include_children=True, max_children=10000, **options):
+                      include_children=True, max_children=10000, model_version_utc=None, **options):
         if not (include_parent or include_children):
             raise ValueError("Нужно запросить родителя или дочерние элементы")
-        return self.run("get-element-relations", {"TargetModelKey": guid(model_key),
+        payload = {"TargetModelKey": guid(model_key),
                         "ElementIds": [element_payload(e) for e in elements],
                         "IncludeParent": include_parent, "IncludeChildren": include_children,
-                        "MaxChildren": max_children}, target_model_key=model_key, **options)
+                        "MaxChildren": max_children}
+        if model_version_utc is not None:
+            payload["ModelVersionUtc"] = utc(model_version_utc)
+        return self.run("get-element-relations", payload, target_model_key=model_key, **options)
     get_element_relations = get_relations
+    def get_spatial_data(self, model_key, elements, *, include_descendants=False,
+                         include_meshes=False, model_version_utc=None, **options):
+        """Габариты и опциональные меши в исходном масштабе SDK, до 100 элементов."""
+        from .spatial import _payload, _options
+        payload = _payload(model_key, elements, include_descendants, include_meshes, model_version_utc)
+        return self.run("get-element-spatial-data", payload, target_model_key=guid(model_key), **_options(options))
+    get_element_spatial_data = get_spatial_data
     def download_file(self, reference, destination, *, overwrite=False, timeout=None,
                       on_status=None, progress=None, **options):
         task = self.submit("download-pilot-file", {"FileReference": reference.payload()}, **options)

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
+import re
 
 def guid(value):
     result = str(UUID(str(value)))
@@ -11,10 +12,23 @@ def guid(value):
 def utc(value):
     if value is None:
         return None
-    dt = datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else value
+    fraction = None
+    if isinstance(value, str):
+        match = re.search(r'[T ]\d{2}:\d{2}:\d{2}\.(\d+)', value)
+        if match:
+            fraction = match.group(1)
+            if len(fraction) > 7:
+                raise ValueError("Дата должна иметь не более 7 знаков долей секунды")
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        dt = value
     if not isinstance(dt, datetime) or dt.tzinfo is None:
         raise ValueError("Нужна дата с часовым поясом, например 2026-08-03T12:00:00Z")
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    converted = dt.astimezone(timezone.utc)
+    # Python datetime has microseconds; Pilot DateTime has 100 ns ticks.
+    # Keep the original seventh digit so a snapshot identity is not rounded.
+    fraction = (fraction if fraction is not None else f"{converted.microsecond:06d}").rstrip('0')
+    return converted.strftime('%Y-%m-%dT%H:%M:%S') + ('.' + fraction if fraction else '') + 'Z'
 
 @dataclass(frozen=True)
 class Element:

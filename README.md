@@ -3,11 +3,21 @@
 Модули для обращения к BIM Workers Manager из Python и Google Colab.
 Python 3.10 или новее.
 
+Выпуск 0.1.3 добавляет запросы пространственных данных и потоковую выгрузку мешей.
+
 ## Подключение в Colab
 
 ```python
-%pip install "git+https://github.com/RSakhnik/PSIMpy.git"
+%pip install --upgrade --no-cache-dir "git+https://github.com/RSakhnik/PSIMpy.git"
 ```
+
+Для файловой выгрузки мешей и таблиц установите дополнительные зависимости:
+
+```python
+%pip install --upgrade --no-cache-dir "pilot-bim-bridge[streaming,pandas] @ git+https://github.com/RSakhnik/PSIMpy.git"
+```
+
+Если пакет уже импортирован, после обновления перезапустите сеанс Colab.
 
 Затем создайте клиент. Токен вводится скрыто и не сохраняется в проекте:
 
@@ -268,6 +278,7 @@ POST не повторяется вслепую. При неясном исхо�
 | search-elements | `bim.search_elements()` |
 | load-element-properties | `bim.load_properties()` |
 | get-element-relations | `bim.get_relations()` |
+| get-element-spatial-data | `bim.get_spatial_data()` |
 | download-pilot-file | `bim.download_file()` |
 | read-excel-content | `bim.read_excel()` |
 | echo / delay / generate-test-result / fail-test | `bim.diagnostic(operation, ...)` |
@@ -294,3 +305,141 @@ python -m unittest discover -s tests -v
 ```text
 python -m pip wheel . --no-deps --wheel-dir dist
 ```
+
+## Пространственные данные
+
+```python
+from getpass import getpass
+from bim_bridge import BimBridge, Element
+
+bim = BimBridge(token=getpass("Токен BIM Bridge: "))
+element = Element(part_id, element_id)
+result = bim.get_spatial_data(
+    model_id, [element],
+    include_descendants=True,
+    include_meshes=False,
+)
+print(result["Elements"][0]["BoundsMin"])
+```
+
+Синоним — `get_element_spatial_data`. Capability выбирается автоматически.
+В прямом запросе допустимо от 1 до 100 исходных элементов. По умолчанию читается
+только сам элемент, без потомков и массивов мешей. `model_version_utc` позволяет
+запросить определённый снимок. Параметры ожидания и отмены такие же, как у других методов.
+
+Числа остаются в масштабе SDK. Единицы не назначаются. `CoordinateSpace=sdk-placement`
+не означает геодезическую привязку. `SceneCoordinatesVerified` сохраняется как вернул worker.
+Отсутствующая собственная геометрия (`no-geometry`) — нормальный результат.
+У доменного элемента геометрия может быть у потомков: для неё нужен `include_descendants=True`.
+
+### Пакеты и один снимок
+
+```python
+from bim_bridge import ExportSnapshot, Checkpoints, iter_spatial_data
+
+snapshot = ExportSnapshot()
+checkpoints = Checkpoints(bim, "checkpoints/spatial")
+for batch in iter_spatial_data(
+    bim, model_id, elements,
+    include_descendants=True,
+    snapshot=snapshot,
+    checkpoints=checkpoints,
+):
+    for item in batch["Elements"]:
+        print(item["Element"], item["BoundsCenter"])
+```
+
+`elements` может быть итератором поиска. Версия из его элементов передаётся дальше.
+Без неё первый ответ фиксирует снимок. При смене снимка выгрузка останавливается.
+По умолчанию пакет содержит 20 исходных элементов без мешей или 5 с мешами.
+`batch_size` позволяет выбрать размер от 1 до 100. Результат пакета сохраняет всю
+структуру, включая `MeshDefinitions`. Не объединяйте все меши модели в один список.
+
+`strict=True` проверяет исходные идентификаторы, State, FailedElementIds, ElementErrors,
+Warnings и Truncated. Частичный ответ вызывает IncompleteResult. При `strict=False`
+ответ возвращается для анализа, но не считается полноценным завершённым кэшем.
+
+Только ошибка завершённого задания worker `RESULT_TOO_LARGE` делит пакет пополам.
+Для одного слишком большого исходного элемента ошибка передаётся вызывающему коду.
+Сетевые ошибки и локальный предел JSON не вызывают повторных SDK-заданий.
+По умолчанию новые пространственные функции задают `can_retry=False`, `max_attempts=1`.
+Повторы блоков передачи worker от этого не отключаются.
+
+### Меши непосредственно в файлы
+
+Из локальной папки проекта установите необязательные зависимости:
+
+```text
+python -m pip install ".[streaming,pandas]"
+```
+
+В Colab загрузите wheel 0.1.3 и установите его:
+
+```python
+%pip install "./pilot_bim_bridge-0.1.3-py3-none-any.whl[streaming,pandas]"
+```
+
+Если bim_bridge уже был импортирован до обновления, перезапустите ядро.
+Для файловой выгрузки достаточно extra `streaming`. pandas нужен только для таблиц.
+Обычный PSIMpy и методы габаритов не требуют ни ijson, ни pandas, ни NumPy.
+
+```python
+from bim_bridge import export_spatial_data
+
+for file in export_spatial_data(
+    bim, model_id, elements,
+    "outputs/spatial-run-01",
+    include_descendants=True,
+    include_meshes=True,
+):
+    print(file["Path"], file["Complete"], file["ModelVersionUtc"])
+```
+
+Весь JSON скачивается на диск. Проверяются транспортные SHA-256 и длина, затем JSON
+проверяется потоково через ijson. Массивы мешей не собираются в Python-списки.
+После проверки публикуются файл и запись в manifest.json. Меш-пакет самодостаточен:
+не удаляйте из него MeshDefinitions и не смешивайте определения разных пакетов или снимков.
+
+Один каталог соответствует одному серверу, токену, модели, набору флагов,
+размеру пакета и снимку. Для свежего снимка или других параметров выберите новый каталог.
+Не редактируйте manifest.json и .checkpoints вручную. Запускайте только одну выгрузку
+в каталог. Если прекращаете итерацию досрочно, закройте генератор через `close()`
+или используйте `contextlib.closing` для немедленного освобождения блокировки.
+
+Состояние сохраняется автоматически. После прерывания повторите тот же вызов:
+он продолжит по TaskId. ClientRequestId записывается до Submit, поэтому ручное
+продолжение после потери ответа использует прежнюю идентичность запроса.
+Готовые файлы проверяются по локальному хешу и данным снимка перед повторным использованием.
+Если готовый файл повреждён, он скачивается заново из того же задания.
+Истёкшее на сервере задание не пересоздаётся файловым режимом молча: ошибка передаётся
+пользователю. Для новой попытки можно выбрать отдельный каталог.
+
+Checkpoints, если передан в export_spatial_data, используется для хранения TaskId
+и ClientRequestId. Файлы и манифест остаются в указанном каталоге выгрузки.
+При strict=False неполный файл сохраняется с Complete=False. Он не используется
+как готовый кэш при следующем запуске. В нём нельзя молча считать габариты полными.
+
+### Вершины и DataFrame
+
+```python
+from bim_bridge import iter_placed_vertices
+
+result = bim.get_spatial_data(model_id, [element], include_meshes=True)
+for x, y, z in iter_placed_vertices(result, element):
+    pass  # Здесь выполняется ваш расчёт. Масштаб чисел не меняется.
+```
+
+Функция применяет ModelPlacement к локальным вершинам каждого экземпляра.
+Она работает без NumPy. Normals и индексы остаются в исходном JSON.
+
+```python
+from bim_bridge.dataframe import spatial_result_to_dataframe
+
+table = spatial_result_to_dataframe(result)
+display(table)
+```
+
+Таблица содержит одну строку на исходный элемент. В ней есть идентификаторы, State,
+Scope, счётчики и BoundsMinX/Y/Z, BoundsMaxX/Y/Z, BoundsCenterX/Y/Z.
+Отсутствующие габариты остаются пустыми, а не нулевыми. Мешей в таблице нет.
+Снимок, CoordinateSpace и MatrixConvention доступны в `table.attrs["spatial"]`.

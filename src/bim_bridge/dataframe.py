@@ -101,6 +101,9 @@ def properties_result_to_dataframe(
     frame.attrs["units"] = units
     frame.attrs["warnings"] = list(result.get("Warnings") or [])
     frame.attrs["failed_element_ids"] = list(result.get("FailedElementIds") or [])
+    frame.attrs["element_errors"] = list(result.get("ElementErrors") or [])
+    frame.attrs["model_version_utc"] = result.get("ModelVersionUtc")
+    frame.attrs["snapshot_verified"] = bool(result.get("SnapshotVerified"))
     if "ModelKey" in result:
         frame.attrs["model_key"] = result.get("ModelKey")
     return frame
@@ -165,6 +168,10 @@ def search_dataframe(
         "Warnings": [],
     }
 
+    from .bulk import ExportSnapshot
+    snapshot = ExportSnapshot(search.get("ModelVersionUtc"))
+    combined['ModelVersionUtc'] = snapshot.version
+    combined['ElementErrors'] = []
     for batch in iter_properties(
         client,
         model_key,
@@ -172,11 +179,14 @@ def search_dataframe(
         batch_size=property_batch_size,
         property_names=property_names,
         strict=strict,
+        snapshot=snapshot,
         **options,
     ):
         combined["Elements"].extend(batch.get("Elements") or [])
         combined["FailedElementIds"].extend(batch.get("FailedElementIds") or [])
         combined["Warnings"].extend(batch.get("Warnings") or [])
+        combined['ElementErrors'].extend(batch.get('ElementErrors') or [])
+        combined['SnapshotVerified'] = snapshot.verified
 
     frame = properties_result_to_dataframe(
         combined,
@@ -405,7 +415,32 @@ def _resolve_sheet_name(names: Iterable[str], requested: str) -> str:
     raise KeyError(f"Лист {requested!r} отсутствует в ответе")
 
 
+def spatial_result_to_dataframe(result: Mapping[str, Any]) -> pd.DataFrame:
+    """Одна строка на исходный элемент, без мешей и преобразования единиц."""
+    rows = []
+    columns = ["ModelPartId", "ElementId", "State", "Scope", "ProcessedNodes",
+               "GeometryElementCount", "InstanceCount"] + [
+        f"{bound}{axis}" for bound in ("BoundsMin", "BoundsMax", "BoundsCenter") for axis in "XYZ"]
+    for element in result.get("Elements") or []:
+        key = element["Element"]
+        row = {"ModelPartId": key["ModelPartId"], "ElementId": key["ElementId"]}
+        for field in ("State", "Scope", "ProcessedNodes", "GeometryElementCount", "InstanceCount"):
+            row[field] = element.get(field)
+        for bound in ("BoundsMin", "BoundsMax", "BoundsCenter"):
+            values = element.get(bound)
+            if values is not None and len(values) != 3:
+                raise ValueError(f"{bound} должен содержать XYZ или null")
+            for index, axis in enumerate("XYZ"):
+                row[bound + axis] = values[index] if values is not None else None
+        rows.append(row)
+    frame = pd.DataFrame(rows, columns=columns)
+    frame.attrs["spatial"] = {key: result.get(key) for key in (
+        "ModelKey", "ModelVersionUtc", "CoordinateSpace", "SceneCoordinatesVerified", "MatrixConvention", "Truncated") if key in result}
+    return frame
+
+
 __all__ = [
+    "spatial_result_to_dataframe",
     "search_result_to_dataframe",
     "properties_result_to_dataframe",
     "search_dataframe",

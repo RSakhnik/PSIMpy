@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import tempfile
 import uuid
+import warnings
 from .errors import BimBridgeError, IncompleteResult
 from .types import Condition, guid, element_payload
 from ._files import publish
@@ -36,9 +37,30 @@ class Checkpoints:
         key = hashlib.sha256(json.dumps([operation, payload, options], sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
         result_path = self.directory / (key + '.result.json')
         state_path = self.directory / (key + '.task.json')
-        if result_path.exists():
-            return json.loads(result_path.read_text(encoding="utf-8"))
-        state = json.loads(state_path.read_text()) if state_path.exists() else {"request_id": str(uuid.uuid4())}
+        spatial = operation == 'get-element-spatial-data'
+        unpinned_read = operation in ('search-elements', 'load-element-properties', 'get-element-relations', 'get-element-spatial-data') and not payload.get('ModelVersionUtc')
+        refresh_completed = result_path.exists() and unpinned_read
+        if result_path.exists() and not unpinned_read:
+            try:
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                if not spatial:
+                    raise
+                result = None
+            if spatial:
+                from .spatial import _complete
+                if result is not None and not _complete(result, payload['ElementIds']):
+                    refresh_completed = True
+                usable = result is not None and not refresh_completed
+            else:
+                usable = True
+            if usable:
+                if payload.get('ModelVersionUtc'):
+                    ExportSnapshot(payload['ModelVersionUtc']).accept(result)
+                return result
+        state = json.loads(state_path.read_text()) if state_path.exists() and not refresh_completed else {"request_id": str(uuid.uuid4())}
+        if spatial and state.get('spatial_incomplete'):
+            state = {"request_id": str(uuid.uuid4())}
         for attempt in range(2):
             _atomic_json(state_path, state)
             if not state.get("task_id"):
@@ -54,6 +76,14 @@ class Checkpoints:
                     state = {"request_id": str(uuid.uuid4())}
                     continue
                 raise
+            if payload.get('ModelVersionUtc'):
+                ExportSnapshot(payload['ModelVersionUtc']).accept(result)
+            if spatial:
+                from .spatial import _complete
+                if not _complete(result, payload['ElementIds']):
+                    state['spatial_incomplete'] = True
+                    _atomic_json(state_path, state)
+                    return result
             _atomic_json(result_path, result)
             return result
 
@@ -83,9 +113,45 @@ def _run(client, checkpoints, operation, payload, model_key, options):
     return runner(operation, payload, target_model_key=model_key, **options)
 
 def _checked(result):
-    if result.get('FailedElementIds') or result.get('Warnings'):
+    if result.get('FailedElementIds') or result.get('ElementErrors') or result.get('Warnings'):
         raise IncompleteResult("Ответ содержит пропуски или предупреждения. Подробности: exception.result", result)
     return result
+
+class ExportSnapshot:
+    """Share one instance between search, properties and relations in an export."""
+    def __init__(self, model_version_utc=None):
+        from .types import utc
+        self.version = utc(model_version_utc) if model_version_utc else None
+        self.verified = False
+        self._warned = False
+
+    def payload(self, payload):
+        return dict(payload, ModelVersionUtc=self.version) if self.version else payload
+
+    def accept(self, result):
+        from .types import utc
+        version = result.get('ModelVersionUtc')
+        if not version:
+            self.verified = False
+            result['SnapshotVerified'] = False
+            if not self._warned:
+                warnings.warn('Worker did not report ModelVersionUtc; snapshot consistency is unverified.', RuntimeWarning, stacklevel=3)
+                self._warned = True
+            if self.version:
+                raise IncompleteResult('Worker did not confirm the requested snapshot', result)
+            return result
+        version = utc(version)
+        if self.version and version != self.version:
+            raise BimBridgeError('MODEL_CHANGED', 'Export snapshot changed; restart the export', retryable=True)
+        self.version, self.verified = version, True
+        result['SnapshotVerified'] = True
+        return result
+
+def _export_snapshot(snapshot, version):
+    snapshot = snapshot or ExportSnapshot(version)
+    if version:
+        snapshot.accept({'ModelVersionUtc': version})
+    return snapshot
 
 def _ifc_id(value):
     alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$'
@@ -96,7 +162,7 @@ def _ifc_id(value):
     return output
 
 def iter_search_elements(client, model_key, part_ids, *, conditions=(), max_results=10000,
-                         checkpoints=None, max_queries=10000, **options):
+                         checkpoints=None, max_queries=10000, snapshot=None, model_version_utc=None, **options):
     """Все найденные элементы по явно заданным частям. Фильтры соединяются AND.
 
     Если индекс не позволяет безопасно разделить выборку, возбуждается
@@ -107,14 +173,15 @@ def iter_search_elements(client, model_key, part_ids, *, conditions=(), max_resu
         raise ValueError("Лимиты должны быть положительными")
     base = [c.payload() if isinstance(c, Condition) else c for c in conditions]
     queries = 0
+    snapshot = _export_snapshot(snapshot, model_version_utc)
     def query(part, filters):
         nonlocal queries
         queries += 1
         if queries > max_queries:
             raise IncompleteResult("Достигнут лимит max_queries, выгрузка не завершена")
-        result = _checked(_run(client, checkpoints, 'search-elements',
-            {'TargetModelKey': model_key, 'TargetModelPartIds': [part], 'LogicalOperator': 'And',
-             'Conditions': filters, 'MaxResults': max_results}, model_key, options))
+        result = snapshot.accept(_checked(_run(client, checkpoints, 'search-elements',
+            snapshot.payload({'TargetModelKey': model_key, 'TargetModelPartIds': [part], 'LogicalOperator': 'And',
+             'Conditions': filters, 'MaxResults': max_results}), model_key, options)))
         for element in result['Elements']:
             if element['ModelPartId'].lower() != part:
                 raise IncompleteResult("Поиск вернул элемент чужой части", result)
@@ -150,7 +217,7 @@ def iter_search_elements(client, model_key, part_ids, *, conditions=(), max_resu
             if element['ElementId'] in seen:
                 raise IncompleteResult("Поисковые диапазоны пересеклись")
             seen.add(element['ElementId'])
-            yield element
+            yield dict(element, ModelVersionUtc=snapshot.version, SnapshotVerified=snapshot.verified)
         missing = query(part, base + [Condition('GlobalId', 'NotDefined', category='Common_Properties').payload()])
         if missing.get('Truncated'):
             raise IncompleteResult("Слишком много элементов без GlobalId. Нужен более узкий фильтр", missing)
@@ -158,22 +225,33 @@ def iter_search_elements(client, model_key, part_ids, *, conditions=(), max_resu
             if element['ElementId'] in seen:
                 raise IncompleteResult("Defined и NotDefined вернули один элемент", missing)
             seen.add(element['ElementId'])
-            yield element
+            yield dict(element, ModelVersionUtc=snapshot.version, SnapshotVerified=snapshot.verified)
 
 def _batches(elements, size):
     if size <= 0:
         raise ValueError("Размер пакета должен быть положительным")
     iterator = iter(elements)
     while batch := list(itertools.islice(iterator, size)):
-        yield [element_payload(e) for e in batch]
+        versions = {e.get('ModelVersionUtc') for e in batch if isinstance(e, dict) and e.get('ModelVersionUtc')}
+        if len(versions) > 1:
+            raise BimBridgeError('MODEL_CHANGED', 'Input elements belong to different snapshots', retryable=True)
+        yield [dict(element_payload(e), **({'ModelVersionUtc': next(iter(versions))} if versions else {})) for e in batch]
+
+def _batch_snapshot(batch, snapshot):
+    versions = {e.pop('ModelVersionUtc') for e in batch if e.get('ModelVersionUtc')}
+    if versions:
+        snapshot.accept({'ModelVersionUtc': next(iter(versions))})
+    return batch
 
 def iter_properties(client, model_key, elements, *, batch_size=500, property_names=None,
-                    checkpoints=None, strict=True, **options):
+                    checkpoints=None, strict=True, snapshot=None, model_version_utc=None, **options):
     """Возвращает пакеты результатов, включая FailedElementIds/Warnings."""
+    snapshot = _export_snapshot(snapshot, model_version_utc)
     for batch in _batches(elements, batch_size):
-        result = _run(client, checkpoints, 'load-element-properties',
-            {'TargetModelKey': guid(model_key), 'ElementIds': batch, 'PropertyNames': property_names,
-             'BatchSize': min(batch_size, 100)}, model_key, options)
+        _batch_snapshot(batch, snapshot)
+        result = snapshot.accept(_run(client, checkpoints, 'load-element-properties',
+            snapshot.payload({'TargetModelKey': guid(model_key), 'ElementIds': batch, 'PropertyNames': property_names,
+             'BatchSize': min(batch_size, 100)}), model_key, options))
         if strict:
             _checked(result)
             expected = {(e['ModelPartId'], e['ElementId']) for e in batch}
@@ -183,13 +261,15 @@ def iter_properties(client, model_key, elements, *, batch_size=500, property_nam
         yield result
 
 def iter_relations(client, model_key, elements, *, batch_size=500, include_parent=True,
-                   include_children=True, max_children=10000, checkpoints=None, strict=True, **options):
+                   include_children=True, max_children=10000, checkpoints=None, strict=True, snapshot=None, model_version_utc=None, **options):
     if not (include_parent or include_children):
         raise ValueError("Нужно запросить родителя или детей")
+    snapshot = _export_snapshot(snapshot, model_version_utc)
     def fetch(batch):
-        result = _run(client, checkpoints, 'get-element-relations',
-            {'TargetModelKey': guid(model_key), 'ElementIds': batch, 'IncludeParent': include_parent,
-             'IncludeChildren': include_children, 'MaxChildren': max_children}, model_key, options)
+        _batch_snapshot(batch, snapshot)
+        result = snapshot.accept(_run(client, checkpoints, 'get-element-relations',
+            snapshot.payload({'TargetModelKey': guid(model_key), 'ElementIds': batch, 'IncludeParent': include_parent,
+             'IncludeChildren': include_children, 'MaxChildren': max_children}), model_key, options))
         if strict:
             _checked(result)
             expected = {(e['ModelPartId'], e['ElementId']) for e in batch}
