@@ -126,6 +126,7 @@ class TokenHttpChunkCompatibilityTests(unittest.TestCase):
         calls=[]
         def json_response(method,path,payload=None):
             self.assertEqual(method,'GET')
+            if path==f'/tasks/{TASK}/result/metadata':return source.metadata
             prefix=f'/tasks/{TASK}/result/chunks/'
             self.assertTrue(path.startswith(prefix))
             index=int(path[len(prefix):]);calls.append(index)
@@ -133,11 +134,12 @@ class TokenHttpChunkCompatibilityTests(unittest.TestCase):
         transport.json=json_response
         def no_full_http_request(*args,**kwargs):raise AssertionError('Range/full download must not be used')
         transport.open=no_full_http_request
+        client=BimBridge('https://example.invalid/bim-bridge',token='test-token');client._http=transport
         with tempfile.TemporaryDirectory() as directory:
             destination=Path(directory)/'result'
             source.interrupt=1
             with self.assertRaises(BimBridgeError):
-                transport.download(f'/tasks/{TASK}/result',destination,source.metadata,resume=True)
+                client.task(TASK).download(destination,resume=True)
             calls.clear();source.interrupt=None
-            transport.download(f'/tasks/{TASK}/result',destination,source.metadata,resume=True)
+            client.task(TASK).download(destination,resume=True)
             self.assertEqual(calls,[1,2]);self.assertEqual(destination.read_bytes(),source.data)

@@ -99,7 +99,7 @@ class Transport:
             from ._chunk_download import download_chunks
             from .types import guid
             parts=path.strip('/').split('/')
-            if len(parts)!=3 or parts[0]!='tasks' or parts[2]!='result':raise ValueError('Invalid result path')
+            if len(parts) not in (3,4) or parts[0]!='tasks' or parts[2]!='result' or (len(parts)==4 and parts[3]!='content'):raise ValueError('Invalid result path')
             return download_chunks(self,guid(parts[1]),destination,metadata,overwrite=overwrite,
                                    decompress=decompress,progress=progress,resume=resume)
         if resume:
