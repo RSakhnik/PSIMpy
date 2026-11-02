@@ -1,13 +1,23 @@
-# Pilot Custom API transport (implementation in progress)
+# Pilot transport and token notebook compatibility
 
 Manager is a Pilot-Server `IServerApiFactory` extension. Its public boundary is
 `IBimBridgeTaskApi`, `IBimBridgeWorkerApi`, `IBimBridgeDiagnosticsApi` and the new,
 additive `IBimBridgeArtifactApi`. It does not expose an ASP.NET REST API.
 
-The original PSIMpy HTTP transport used `/tasks/...` paths. No implementation of
-an adapter for those paths exists in the three source repositories. Existing
-HTTP callers remain supported for environments with an external adapter, but
-that adapter is not a dependency of the new architecture. No HTTP server is added.
+## Existing token notebook compatibility (0.2.1)
+
+The existing notebook uses `BimBridge(token=...)` against `/bim-bridge`. Its old
+configuration contains `RestApi`, but that binding was absent from the repository
+and the first v2 Manager build. `TokenHttpAdapter` now restores this opt-in binding
+inside the same extension, using the same runtime/store. It is not a separate
+server process or ASP.NET/Kestrel facade. Keep the deployed Prefix, token, reverse
+proxy and storage settings. Default is disabled unless RestApi.Enabled is true.
+Environment token takes precedence if present, otherwise configured Token is used.
+
+Metadata advertises `DownloadProtocol=token-http-chunks-v2`; PSIMpy reads
+`/tasks/{taskId}/result/chunks/{index}` using the same durable native protocol
+download logic. Byte Range/206 is not required. `/health`, `/workers`, POST `/tasks`,
+GET/DELETE `/tasks/{id}`, metadata and full result routes preserve notebook compatibility.
 
 ## Direct connection, including Colab
 

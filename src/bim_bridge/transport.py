@@ -30,6 +30,7 @@ class Transport:
             raise ValueError("auth: token или bearer")
         self.base_url, self._token = base_url.rstrip("/"), token
         self.timeout, self.retries, self.max_json_bytes = timeout, retries, max_json_bytes
+        self.max_chunk_bytes = 4 * 1024 * 1024
         self._headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
         self._headers["X-Api-Token" if auth == "token" else "Authorization"] = token if auth == "token" else "Bearer " + token
         self._opener = urllib.request.build_opener(_NoRedirect())
@@ -85,7 +86,22 @@ class Transport:
             raise BimBridgeError(error.get("Code", "API_ERROR"), str(error.get("Message", "Ошибка API")).replace(self._token, "[REDACTED]"), retryable=bool(error.get("IsRetryable")))
         return result
 
+    def rpc(self, method, **arguments):
+        if method != 'ReadResultChunk':
+            raise BimBridgeError('INVALID_REQUEST', 'Unknown HTTP compatibility RPC')
+        from .types import guid
+        task_id=guid(arguments['TaskId']);index=arguments['ChunkIndex']
+        if type(index) is not int or index < 0:raise ValueError('Invalid chunk index')
+        return self.json('GET', f'/tasks/{task_id}/result/chunks/{index}')
+
     def download(self, path, destination, metadata, *, overwrite=False, decompress=False, progress=None, resume=False):
+        if metadata.get('DownloadProtocol') == 'token-http-chunks-v2':
+            from ._chunk_download import download_chunks
+            from .types import guid
+            parts=path.strip('/').split('/')
+            if len(parts)!=3 or parts[0]!='tasks' or parts[2]!='result':raise ValueError('Invalid result path')
+            return download_chunks(self,guid(parts[1]),destination,metadata,overwrite=overwrite,
+                                   decompress=decompress,progress=progress,resume=resume)
         if resume:
             from ._download import download_resumable
             return download_resumable(self, path, destination, metadata, overwrite=overwrite,

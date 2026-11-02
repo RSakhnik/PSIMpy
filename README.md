@@ -5,6 +5,26 @@ Python 3.10 или новее.
 
 Версия 0.2.0 сохраняет query API и добавляет отдельный bulk export с durable upload/download, pagination и binary spatial.
 
+## Существующий Colab с токеном (0.2.1)
+
+Ваше подключение сохраняется:
+
+```python
+from getpass import getpass
+from bim_bridge import BimBridge
+bim = BimBridge(token=getpass("Токен BIM Bridge: "), http_timeout=120)
+print(bim.health())
+```
+
+Для этого пути Manager должен содержать исправление `TokenHttpAdapter` и
+`RestApi.Enabled=true`. Оно восстанавливает `/bim-bridge` внутри расширения,
+использует прежний `RestApi.Prefix`, Token/TokenEnvironmentVariable и тот же runtime.
+При прежнем reverse proxy адрес PSIMpy менять не нужно. В сборке Manager до этого
+исправления настройки RestApi игнорировались, что могло приводить к upstream 502.
+Token endpoint возвращает metadata с `DownloadProtocol=token-http-chunks-v2`;
+PSIMpy продолжает скачивание через result chunks, без HTTP Range.
+Прямое подключение ниже остаётся отдельной возможностью и не требуется для этого блокнота.
+
 ## Подключение в Colab через Pilot Custom API
 
 ```python
@@ -32,8 +52,7 @@ print(bim.health())
 ```
 
 Адаптер — локальный дочерний процесс со stdin/stdout. Сеть обслуживает официальный
-`HttpPilotClient`, вызывающий Custom API Manager. Отдельного `/bim-bridge` REST-сервера
-в этих проектах нет. Пароль передаётся через stdin, не через аргументы процесса.
+`HttpPilotClient`, вызывающий Custom API Manager. Прямой транспорт не использует token endpoint `/bim-bridge`. Пароль передаётся через stdin, не через аргументы процесса.
 Сборка требует доступа к NuGet. Реальный Linux/Colab login требует проверки на вашем
 Pilot; локальные тесты проверяют протокол на fake SDK, без подключения к Pilot.
 Подробнее: [транспорт](TRANSPORT.md), [пример Colab](examples/colab_bulk.py).
@@ -67,9 +86,9 @@ Bulk требует новых worker и Manager; отсутствие capabilit
 
 ## Совместимость с внешним HTTP adapter
 
-Существующий `BimBridge(url, token=...)` оставлен для пользователей **внешнего** REST adapter.
-Он не является адресом Custom API Pilot и не подходит напрямую к этому Manager.
-HTTP Range остаётся необязательным legacy механизмом клиента. Новый сервер не создаётся.
+`BimBridge(url, token=...)` работает с opt-in TokenHttpAdapter Manager или прежним внешним adapter.
+HTTP endpoint и native Custom API — разные bindings одного runtime. Для нового
+chunk path HTTP Range не нужен; legacy HTTP Range helper сохранён для внешних adapter.
 
 ## Каталог моделей и частей
 

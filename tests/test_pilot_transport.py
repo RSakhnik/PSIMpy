@@ -116,3 +116,28 @@ class PilotAdapterTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class TokenHttpChunkCompatibilityTests(unittest.TestCase):
+    def test_existing_http_client_resumes_by_protocol_chunks_without_ranges(self):
+        from bim_bridge.transport import Transport
+        source=ChunkSource(b'0123456789');source.metadata['DownloadProtocol']='token-http-chunks-v2'
+        transport=Transport('https://example.invalid/bim-bridge','test-token',retries=0)
+        calls=[]
+        def json_response(method,path,payload=None):
+            self.assertEqual(method,'GET')
+            prefix=f'/tasks/{TASK}/result/chunks/'
+            self.assertTrue(path.startswith(prefix))
+            index=int(path[len(prefix):]);calls.append(index)
+            return source.rpc('ReadResultChunk',TaskId=TASK,ChunkIndex=index)
+        transport.json=json_response
+        def no_full_http_request(*args,**kwargs):raise AssertionError('Range/full download must not be used')
+        transport.open=no_full_http_request
+        with tempfile.TemporaryDirectory() as directory:
+            destination=Path(directory)/'result'
+            source.interrupt=1
+            with self.assertRaises(BimBridgeError):
+                transport.download(f'/tasks/{TASK}/result',destination,source.metadata,resume=True)
+            calls.clear();source.interrupt=None
+            transport.download(f'/tasks/{TASK}/result',destination,source.metadata,resume=True)
+            self.assertEqual(calls,[1,2]);self.assertEqual(destination.read_bytes(),source.data)
