@@ -12,3 +12,6 @@ __all__ = ["BimBridge", "Task", "Condition", "Element", "FileReference", "BimBri
            "TaskFailed", "TaskTimeout", "IncompleteResult", "Checkpoints", "ExportSnapshot", "select_parts",
            "iter_search_elements", "iter_properties", "iter_relations", "write_jsonl",
            "iter_spatial_data", "export_spatial_data", "iter_placed_vertices", "build_pilot_adapter", "iter_search_pages", "ExportArtifact", "SpatialArtifact", "SpatialBufferSection"]
+
+from .parallel import ParallelExport, export_spatial_parallel
+__all__ += ["ParallelExport", "export_spatial_parallel"]

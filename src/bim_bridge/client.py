@@ -88,6 +88,16 @@ class BimBridge:
     def export_spatial(self, model_key, destination, **options):
         from .exports import export_spatial
         return export_spatial(self,model_key,destination,**options)
+    def export_spatial_parallel(self, model_key, destination, **options):
+        from .parallel import export_spatial_parallel
+        return export_spatial_parallel(self, model_key, destination, **options)
+    def _parallel_fork(self):
+        instance=type(self).__new__(type(self))
+        instance._http=self._http.fork()
+        instance.task_timeout,instance.poll_interval=self.task_timeout,self.poll_interval
+        return instance
+    def statistics(self):
+        return self._http.json("GET", "/statistics")
     def workers(self):
         return self._http.json("GET", "/workers")
     def supports(self, capability, *, model_key=None):

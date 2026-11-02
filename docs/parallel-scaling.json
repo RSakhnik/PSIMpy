@@ -1,0 +1,53 @@
+[
+  {
+    "Workers": 1,
+    "WallSeconds": 18.961289499886334,
+    "Shards": 18,
+    "SdkSecondsPerShard": 1.0,
+    "UploadSecondsPerShard": 0.3,
+    "DownloadSecondsPerShard": 0.3,
+    "SequentialStageSeconds": 28.8,
+    "IdealSdkPipelineSeconds": 18.6,
+    "Assignments": {
+      "0": 18
+    },
+    "DownloadPeak": 1,
+    "Complete": true,
+    "Speedup": 1.0
+  },
+  {
+    "Workers": 2,
+    "WallSeconds": 9.810086600482464,
+    "Shards": 18,
+    "SdkSecondsPerShard": 1.0,
+    "UploadSecondsPerShard": 0.3,
+    "DownloadSecondsPerShard": 0.3,
+    "SequentialStageSeconds": 28.8,
+    "IdealSdkPipelineSeconds": 9.600000000000001,
+    "Assignments": {
+      "0": 9,
+      "1": 9
+    },
+    "DownloadPeak": 2,
+    "Complete": true,
+    "Speedup": 1.9328360973850944
+  },
+  {
+    "Workers": 3,
+    "WallSeconds": 7.316216900013387,
+    "Shards": 18,
+    "SdkSecondsPerShard": 1.0,
+    "UploadSecondsPerShard": 0.3,
+    "DownloadSecondsPerShard": 0.3,
+    "SequentialStageSeconds": 28.8,
+    "IdealSdkPipelineSeconds": 6.6,
+    "Assignments": {
+      "1": 6,
+      "2": 6,
+      "0": 6
+    },
+    "DownloadPeak": 2,
+    "Complete": true,
+    "Speedup": 2.591679519486586
+  }
+]

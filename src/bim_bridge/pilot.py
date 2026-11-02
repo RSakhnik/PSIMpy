@@ -53,6 +53,12 @@ class PilotTransport:
         self._command=[dotnet,str(adapter or build_pilot_adapter(dotnet=dotnet))]
         self._lock=threading.Lock();self._process=None
 
+    def fork(self):
+        return type(self)(self._credentials['ServerDatabase'],self._credentials['Login'],self._credentials['Password'],
+            adapter=self._command[1],dotnet=self._command[0],timeout=self.timeout,retries=self.retries,
+            max_json_bytes=self.max_json_bytes,max_chunk_bytes=self.max_chunk_bytes,
+            enterprise_code=self._credentials['EnterpriseCode'])
+
     def _exchange(self,method,**arguments):
         process=self._process
         process.stdin.write(json.dumps(dict(arguments,Method=method))+'\n');process.stdin.flush()
@@ -100,6 +106,7 @@ class PilotTransport:
         # These path strings never leave this process as HTTP requests.
         if (method,path)==('GET','/health'):return self.rpc('GetHealth')
         if (method,path)==('GET','/workers'):return self.rpc('GetWorkers')
+        if (method,path)==('GET','/statistics'):return self.rpc('GetStatistics')
         if (method,path)==('POST','/tasks'):
             request=dict(payload)
             request['protocolVersion']=request.get('protocolVersion') or '1.0'

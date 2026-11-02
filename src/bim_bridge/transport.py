@@ -35,6 +35,10 @@ class Transport:
         self._headers["X-Api-Token" if auth == "token" else "Authorization"] = token if auth == "token" else "Bearer " + token
         self._opener = urllib.request.build_opener(_NoRedirect())
 
+    def fork(self):
+        return type(self)(self.base_url,self._token,timeout=self.timeout,retries=self.retries,
+                          auth='token' if 'X-Api-Token' in self._headers else 'bearer',max_json_bytes=self.max_json_bytes)
+
     def _error(self, response, status):
         try:
             data = json.loads(response.read(65536))

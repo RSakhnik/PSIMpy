@@ -485,3 +485,9 @@ display(table)
 Scope, счётчики и BoundsMinX/Y/Z, BoundsMaxX/Y/Z, BoundsCenterX/Y/Z.
 Отсутствующие габариты остаются пустыми, а не нулевыми. Мешей в таблице нет.
 Снимок, CoordinateSpace и MatrixConvention доступны в `table.attrs["spatial"]`.
+
+## Parallel spatial exports (0.3.0)
+
+`client.export_spatial_parallel(...)` shards explicit ElementIds, pins one snapshot and overlaps bounded submit/monitor/download with streaming consumption. Durable session resume, defaults, examples and validation: [parallel-exports.md](docs/parallel-exports.md). Existing single-task APIs remain unchanged.
+
+Implementation report and synthetic results: [parallel-implementation-report.md](docs/parallel-implementation-report.md), [parallel-scaling.json](docs/parallel-scaling.json).

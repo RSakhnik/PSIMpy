@@ -44,6 +44,7 @@ while ((line = Console.ReadLine()) != null)
             {
                 case "GetHealth": result=await diagnostics.GetHealthAsync();break;
                 case "GetWorkers": result=await diagnostics.GetWorkersAsync();break;
+                case "GetStatistics": result=await diagnostics.GetStatisticsAsync();break;
                 case "SubmitTask": result=await tasks.SubmitTaskAsync(request["Request"].ToObject<SubmitBimTaskRequestDto>());break;
                 case "GetTaskStatus": result=await tasks.GetTaskStatusAsync(Guid.Parse(request.Value<string>("TaskId")));break;
                 case "CancelTask": result=await tasks.CancelTaskAsync(Guid.Parse(request.Value<string>("TaskId")));break;
