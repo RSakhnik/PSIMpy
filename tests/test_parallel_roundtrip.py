@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import queue
 import socket
+import sys
 import subprocess
 import tempfile
 import threading
@@ -71,3 +72,73 @@ class ParallelRoundTripTests(unittest.TestCase):
                     try:process.stdin.write('stop\n');process.stdin.flush();process.wait(10)
                     except (OSError,subprocess.TimeoutExpired):process.kill();process.wait(5)
                 process.stdin.close();process.stdout.close();process.stderr.close()
+
+    def test_python_process_crash_and_restart_resume_same_remote_tasks_and_ready_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment=dict(os.environ,BIM_BRIDGE_HARNESS_ROOT=directory)
+            with socket.socket() as listener:
+                listener.bind(('127.0.0.1',0));port=listener.getsockname()[1]
+            prefix=f'http://127.0.0.1:{port}/bim-bridge/'
+            host=subprocess.Popen(['dotnet',os.environ['BIM_BRIDGE_TEST_HARNESS'],'--parallel',prefix,'2'],
+                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=environment,
+                creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            first=None;client=BimBridge(prefix,token='parallel-test-only-token',poll_interval=.005,http_timeout=10,retries=0)
+            destination=Path(directory)/'process-resume'
+            environment.update(PARALLEL_TEST_URL=prefix,PARALLEL_TEST_DESTINATION=str(destination))
+            setup="""import os,json,time
+from bim_bridge import BimBridge
+from parallel_support import elements
+from spatial_support import MODEL,V1
+client=BimBridge(os.environ['PARALLEL_TEST_URL'],token='parallel-test-only-token',poll_interval=.005,http_timeout=10,retries=0)
+"""
+            try:
+                self.assertTrue(self.line(host)['Ready'])
+                first=subprocess.Popen([sys.executable,'-u','-c',setup+"""
+import bim_bridge._chunk_download as chunks
+save_state=chunks._state
+def crash_window(path,value):
+ if 'shard-000002.' in path.name and value['Downloaded']==0:
+  while globals().get('export') is None or export.manifest['CompletedShards']<2:time.sleep(.005)
+  print(json.dumps({'Checkpoint':True,'EmptyJournalWindow':True}),flush=True)
+  while True:time.sleep(1)
+ return save_state(path,value)
+chunks._state=crash_window
+export=client.export_spatial_parallel(MODEL,os.environ['PARALLEL_TEST_DESTINATION'],element_ids=elements(40),model_version_utc=V1,shard_size=2,task_prefetch=4)
+while True:time.sleep(1)
+"""],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=environment,
+                    creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                checkpoint=self.line(first)
+                self.assertTrue(checkpoint['Checkpoint']);self.assertTrue(checkpoint['EmptyJournalWindow'])
+                first.kill();first.wait(5) # abrupt kernel/process exit; no close()/cleanup
+                before=json.loads((destination/'manifest.json').read_text(encoding='utf-8'))
+                ready={s['ShardId']:(s['TaskId'],(destination/s['Destination']).stat().st_mtime_ns)
+                       for s in before['Shards'] if s['State'] in {'READY','CONSUMED'}}
+                self.assertTrue(ready)
+                resumed=subprocess.run([sys.executable,'-u','-c',setup+"""
+with client.export_spatial_parallel(MODEL,os.environ['PARALLEL_TEST_DESTINATION'],element_ids=None,shard_size=2,task_prefetch=4) as export:
+ export.wait(30)
+ print(json.dumps({'Complete':export.manifest['Complete']}),flush=True)
+client.close()
+"""],capture_output=True,text=True,env=environment,timeout=40,
+                    creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                diagnostic=json.loads((destination/'manifest.json').read_text(encoding='utf-8'))
+                failures=[s for s in diagnostic['Shards'] if s['State']=='FAILED']
+                self.assertEqual(resumed.returncode,0,resumed.stdout+resumed.stderr+json.dumps(failures))
+                self.assertTrue(json.loads(resumed.stdout)['Complete'])
+                after=json.loads((destination/'manifest.json').read_text(encoding='utf-8'))
+                self.assertEqual(after['ExportSessionId'],before['ExportSessionId'])
+                self.assertEqual(after['CompletedShards'],20)
+                self.assertEqual(client.statistics()['AssignmentsTotal'],20)
+                for number,(task_id,modified) in ready.items():
+                    shard=after['Shards'][number]
+                    self.assertEqual(shard['TaskId'],task_id)
+                    self.assertEqual((destination/shard['Destination']).stat().st_mtime_ns,modified)
+            finally:
+                client.close()
+                if first is not None:
+                    if first.poll() is None:first.kill();first.wait(5)
+                    first.stdout.close();first.stderr.close()
+                if host.poll() is None:
+                    try:host.stdin.write('stop\n');host.stdin.flush();host.wait(10)
+                    except (OSError,subprocess.TimeoutExpired):host.kill();host.wait(5)
+                host.stdin.close();host.stdout.close();host.stderr.close()

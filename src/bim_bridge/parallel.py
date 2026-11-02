@@ -356,7 +356,7 @@ class ParallelExport:
         path = self._path(shard['Destination'])
         with self._download_client() as client:
             task = client.task(shard['TaskId'])
-            task.download(path, overwrite=path.exists(), resume=True, progress=progress)
+            task.download(path, overwrite=True, resume=True, progress=progress)  # owned path: atomic rename, including FUSE
         if not _local_valid(path, shard['Metadata']):
             raise BimBridgeError('INTEGRITY_ERROR', 'Size/SHA-256 shard не совпал')
         self._validate(path, shard['Metadata'])

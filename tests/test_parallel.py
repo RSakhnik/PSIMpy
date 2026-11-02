@@ -268,3 +268,9 @@ class ParallelTests(unittest.TestCase):
                 self.assertEqual(error.exception.code,'EXPORT_IN_USE')
             finally:owner.close()
             restarted=_SessionLock(Path(self.directory.name));restarted.close()
+
+    def test_owned_shard_publish_uses_atomic_replace_without_hard_link_fallback(self):
+        farm=self.farm()
+        with patch('bim_bridge._files.os.link',side_effect=OSError(errno.ENOTSUP,'no hard links')) as link:
+            self.start(farm,count=4).wait(10)
+            link.assert_not_called()

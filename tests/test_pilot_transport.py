@@ -39,6 +39,21 @@ class ChunkDownloadTests(unittest.TestCase):
         self.source=ChunkSource(b'0123456789')
     def download(self,**options):
         return download_chunks(self.source,TASK,self.path,self.source.metadata,**options)
+    def test_resume_recovers_crash_before_initial_empty_journal_publication(self):
+        with patch('bim_bridge._chunk_download._state',side_effect=RuntimeError('crash before journal')):
+            with self.assertRaises(RuntimeError):self.download()
+        partial=self.path.with_name(self.path.name+'.inprogress')
+        self.assertEqual(partial.stat().st_size,0)
+        self.assertFalse(self.path.with_name(self.path.name+'.download.json').exists())
+        self.download()
+        self.assertEqual(self.path.read_bytes(),self.source.data)
+    def test_zero_commit_journal_can_recreate_missing_empty_partial(self):
+        self.source.interrupt=0
+        with self.assertRaises(BimBridgeError):self.download()
+        self.path.with_name(self.path.name+'.inprogress').unlink()
+        self.download()
+        self.assertEqual(self.path.read_bytes(),self.source.data)
+
     def test_restart_reads_first_missing_chunk_and_preserves_destination(self):
         self.path.write_bytes(b'previous')
         self.source.interrupt=1

@@ -491,3 +491,5 @@ Scope, счётчики и BoundsMinX/Y/Z, BoundsMaxX/Y/Z, BoundsCenterX/Y/Z.
 `client.export_spatial_parallel(...)` shards explicit ElementIds, pins one snapshot and overlaps bounded submit/monitor/download with streaming consumption. Durable session resume, defaults, examples and validation: [parallel-exports.md](docs/parallel-exports.md). Existing single-task APIs remain unchanged.
 
 Implementation report and synthetic results: [parallel-implementation-report.md](docs/parallel-implementation-report.md), [parallel-scaling.json](docs/parallel-scaling.json).
+
+0.3.1 additionally recovers the empty-partial/initial-journal crash window and atomically publishes owned shard paths on mounted filesystems without hard links. A real Python process crash/restart test verifies READY-file reuse and no duplicate SDK assignments.

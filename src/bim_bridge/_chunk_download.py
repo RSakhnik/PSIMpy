@@ -40,15 +40,19 @@ def download_chunks(transport, task_id, destination, metadata, *, overwrite=Fals
         if saved.get('Identity') != identity:
             raise BimBridgeError('ARTIFACT_CHANGED','Immutable artifact изменился; выберите другой путь')
         count=saved.get('Downloaded')
+        if count == 0 and not partial.exists() and saved.get('PartialSha256') == hashlib.sha256(b'').hexdigest():
+            partial.touch(exist_ok=False)
         if type(count) is not int or not 0 <= count <= length or (count != length and count%size) or not partial.is_file() or partial.stat().st_size<count:
             raise BimBridgeError('INTEGRITY_ERROR','Некорректная граница сохранённого chunk')
         with partial.open('r+b') as stream: stream.truncate(count)
         if _hash(partial)!=saved.get('PartialSha256'):
             raise BimBridgeError('INTEGRITY_ERROR','Сохранённые chunks повреждены')
-    elif partial.exists():
+    elif partial.exists() and (not partial.is_file() or partial.stat().st_size != 0):
         raise BimBridgeError('INTEGRITY_ERROR','Partial artifact не имеет состояния')
     else:
-        partial.touch(exist_ok=False)
+        # A crash can occur after creating the empty file and before publishing
+        # its first journal. No bytes/identity are reused: initialize from zero.
+        partial.touch(exist_ok=True)
         _state(state_path,{'Identity':identity,'Downloaded':0,'PartialSha256':hashlib.sha256(b'').hexdigest()})
     digest=hashlib.sha256()
     with partial.open('rb') as stream:

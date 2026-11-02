@@ -1,4 +1,4 @@
-# Parallel spatial exports (0.3.0)
+# Parallel spatial exports (0.3.1)
 
 `BimBridge.export_spatial_parallel()` — additive API. Старые `export_spatial`, `iter_spatial_data`, `get_spatial_data` сохраняют поведение. Первый вариант parallel API принимает explicit composite ElementIds; distributed search не выполняется.
 
@@ -68,3 +68,5 @@ Synthetic diagnostic: `PYTHONPATH=src;tests python tests/benchmark_parallel.py -
 ## Стенд на двух машинах
 
 Открыть одну и ту же модель/snapshot на двух Pilot-BIM, проверить разные MachineName/DurableWorkerId и независимые spool owner locks. Обновление Manager/worker устанавливается отдельно в согласованное окно. Проверить workers(), capabilities и model keys. Сначала выполнить небольшой bounds-only parallel export, сопоставить Sources/геометрию с одиночным API; проверить распределение TaskId, overlap, queue<=2 и download<=2. Затем отключить один worker/сеть, перезапустить Python с тем же каталогом и проверить requeue/resume без повторного download READY файлов. После этого проверить full meshes, размер повторных buffers, квоты и disk/SHA bottlenecks. Реальные Pilot процессы и рабочий Colab автоматическими тестами не затрагиваются.
+
+Crash recovery: пустой temporary artifact без initial journal безопасно инициализируется заново; неизвестный непустой partial по-прежнему отвергается. Owned shard-файлы публикуются через atomic replace, включая filesystem без hard links. Проверка process restart аварийно завершает Python без close(), запускает новый Python и подтверждает прежние TaskId/mtime READY файлов и ровно 20 assignments для 20 shards.
