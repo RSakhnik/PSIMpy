@@ -3,50 +3,73 @@
 Модули для обращения к BIM Workers Manager из Python и Google Colab.
 Python 3.10 или новее.
 
-Выпуск 0.1.3 добавляет запросы пространственных данных и потоковую выгрузку мешей.
+Версия 0.2.0 сохраняет query API и добавляет отдельный bulk export с durable upload/download, pagination и binary spatial.
 
-## Подключение в Colab
+## Подключение в Colab через Pilot Custom API
 
 ```python
-%pip install --upgrade --no-cache-dir "git+https://github.com/RSakhnik/PSIMpy.git"
+%pip install "pilot-bim-bridge[streaming,pandas,numpy] @ git+https://github.com/RSakhnik/PSIMpy.git"
 ```
 
-Для файловой выгрузки мешей и таблиц установите дополнительные зависимости:
+Нужен .NET SDK 9 для первой сборки локального адаптера (или готовый адаптер и runtime 9).
+Установите SDK в отдельную папку сеанса Colab:
 
 ```python
-%pip install --upgrade --no-cache-dir "pilot-bim-bridge[streaming,pandas] @ git+https://github.com/RSakhnik/PSIMpy.git"
-```
+import os, subprocess, urllib.request
+urllib.request.urlretrieve("https://dot.net/v1/dotnet-install.sh", "/content/dotnet-install.sh")
+subprocess.run(["bash", "/content/dotnet-install.sh", "--channel", "9.0",
+                "--install-dir", "/content/dotnet", "--no-path"], check=True)
+os.environ["DOTNET_ROOT"] = "/content/dotnet"
+os.environ["PATH"] = "/content/dotnet:" + os.environ["PATH"]
 
-Если пакет уже импортирован, после обновления перезапустите сеанс Colab.
-
-Затем создайте клиент. Токен вводится скрыто и не сохраняется в проекте:
-
-```python
 from getpass import getpass
 from bim_bridge import BimBridge, Condition, Element, FileReference
-
-bim = BimBridge(
-    "https://360pilot.ru/bim-bridge",
-    token=getpass("Токен BIM Bridge: "),
+bim = BimBridge.from_pilot(
+    "https://pilot.example/database",  # адрес и база вашего Pilot
+    login=input("Логин Pilot: "), password=getpass("Пароль Pilot: "),
 )
 print(bim.health())
-print(bim.workers())
 ```
 
-Нужен токен API BIM Bridge. Если прокси требует именно Bearer, добавьте
-`auth="bearer"`. По умолчанию используется `X-Api-Token`. Токен другого сервиса
-может не подойти. Проверка TLS включена. Перенаправления запрещены, чтобы токен
-не ушёл по другому адресу. Указывайте конечный URL API без `/health`.
+Адаптер — локальный дочерний процесс со stdin/stdout. Сеть обслуживает официальный
+`HttpPilotClient`, вызывающий Custom API Manager. Отдельного `/bim-bridge` REST-сервера
+в этих проектах нет. Пароль передаётся через stdin, не через аргументы процесса.
+Сборка требует доступа к NuGet. Реальный Linux/Colab login требует проверки на вашем
+Pilot; локальные тесты проверяют протокол на fake SDK, без подключения к Pilot.
+Подробнее: [транспорт](TRANSPORT.md), [пример Colab](examples/colab_bulk.py).
 
-В локальном Python можно использовать отдельный файл:
+## Массовая выгрузка
 
 ```python
-bim = BimBridge(token_file="secrets/bim.token")
+artifact = bim.export_elements(model_id, "outputs/elements.ndjson.gz",
+    part_ids=part_ids, property_names=["Name", "GlobalId", "Mass"])
+for frame in artifact.iter_dataframes(chunk_size=10000):
+    display(frame.head())
+
+spatial = bim.export_spatial(model_id, "outputs/spatial.bbsp", part_ids=part_ids,
+    include_meshes=True, include_indices=True).spatial()
+spatial.validate()
 ```
 
-Файл содержит только токен. Не публикуйте его, вывод ячеек с данными и каталоги
-выгрузок в GitHub. Для приватного репозитория отдельно настройте доступ Colab к
-GitHub. Токен GitHub не является токеном BIM Bridge.
+Повторите тот же export с тем же путём после сбоя: checkpoint сохраняет request/task ID,
+а download продолжает durable prefix через `GetResultMetadataAsync` / `ReadResultChunkAsync`.
+Публикация файла происходит после проверки длины и SHA-256. Изменённый artifact нельзя
+продолжить молча. Для перезапуска Colab сохраняйте outputs и checkpoint на постоянном диске.
+Один процесс должен владеть каждым destination. Серверные результаты ограничены TTL;
+проверенный локальный файл можно повторно открыть без доступного worker.
+Итераторы проверяют summary при полном чтении; раннее завершение не подтверждает полный export.
+[Binary spatial](BINARY_SPATIAL.md) хранит geometry buffers вне JSON и поддерживает memmap.
+
+`bim.search_page(...)` и `iter_search_elements(...)` используют opaque cursor при
+наличии `paged-search-v2`. Cursor привязан к worker, query, snapshot и сроку хранения.
+Малые запросы `search_elements`, `read_properties`, `get_spatial_data` сохранены.
+Bulk требует новых worker и Manager; отсутствие capability возвращает явную ошибку.
+
+## Совместимость с внешним HTTP adapter
+
+Существующий `BimBridge(url, token=...)` оставлен для пользователей **внешнего** REST adapter.
+Он не является адресом Custom API Pilot и не подходит напрямую к этому Manager.
+HTTP Range остаётся необязательным legacy механизмом клиента. Новый сервер не создаётся.
 
 ## Каталог моделей и частей
 

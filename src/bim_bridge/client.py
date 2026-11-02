@@ -50,11 +50,25 @@ class Task:
         return self.client._http.json("GET", f"/tasks/{self.id}/result")
     def metadata(self):
         return self.client._http.json("GET", f"/tasks/{self.id}/result/metadata")
-    def download(self, destination, *, overwrite=False, decompress=False, progress=None):
+    def download(self, destination, *, overwrite=False, decompress=False, progress=None, resume=True):
         return self.client._http.download(f"/tasks/{self.id}/result/content", destination, self.metadata(),
-                                         overwrite=overwrite, decompress=decompress, progress=progress)
+                                         overwrite=overwrite, decompress=decompress, progress=progress, resume=resume)
 
 class BimBridge:
+    @classmethod
+    def from_pilot(cls, server_database, login, password, *, task_timeout=1800, poll_interval=2, **transport_options):
+        """Pilot Custom API directly; suitable for Colab with .NET SDK/runtime."""
+        from .pilot import PilotTransport
+        if task_timeout<=0 or poll_interval<=0:raise ValueError('Таймаут и интервал должны быть положительными')
+        instance=cls.__new__(cls)
+        instance._http=PilotTransport(server_database,login,password,**transport_options)
+        instance.task_timeout,instance.poll_interval=task_timeout,poll_interval
+        return instance
+
+    def close(self):
+        close=getattr(self._http,'close',None)
+        if close:close()
+
     def __init__(self, base_url="https://360pilot.ru/bim-bridge", *, token=None,
                  token_file=None, task_timeout=1800, poll_interval=2, http_timeout=60,
                  retries=2, auth="token", max_json_bytes=128*1024*1024):
@@ -68,8 +82,32 @@ class BimBridge:
         self.task_timeout, self.poll_interval = task_timeout, poll_interval
     def health(self):
         return self._http.json("GET", "/health")
+    def export_elements(self, model_key, destination, **options):
+        from .exports import export_elements
+        return export_elements(self,model_key,destination,**options)
+    def export_spatial(self, model_key, destination, **options):
+        from .exports import export_spatial
+        return export_spatial(self,model_key,destination,**options)
     def workers(self):
         return self._http.json("GET", "/workers")
+    def supports(self, capability, *, model_key=None):
+        workers=self.workers()
+        if isinstance(workers,dict):workers=workers.get('Workers',[])
+        key=guid(model_key) if model_key else None
+        return any(capability in worker.get('Capabilities',[]) and
+                   (key is None or key in [str(k).lower() for k in worker.get('AvailableModelKeys',[])]
+                    or 'resolve-model-key' in worker.get('Capabilities',[]))
+                   for worker in workers if worker.get('State') not in ('OFFLINE','UNREGISTERED'))
+    def search_page(self, model_key, conditions=(), *, part_ids=None, logical_operator='And',
+                    page_size=10000, cursor=None, model_version_utc=None, **options):
+        if not self.supports('paged-search-v2',model_key=model_key):
+            raise BimBridgeError('CAPABILITY_NOT_AVAILABLE','Worker не поддерживает paged-search-v2')
+        payload={'TargetModelKey':guid(model_key),'Conditions':[c.payload() if isinstance(c,Condition) else c for c in conditions],
+                 'LogicalOperator':logical_operator,'PageSize':page_size,'Cursor':cursor}
+        if part_ids is not None:payload['TargetModelPartIds']=[guid(p) for p in part_ids]
+        if model_version_utc is not None:payload['ModelVersionUtc']=utc(model_version_utc)
+        return self.run('search-elements',payload,target_model_key=model_key,
+                        required_capabilities=['paged-search-v2'],**options)
     def task(self, task_id):
         return Task(self, guid(task_id))
     def submit(self, operation, payload=None, *, target_model_key=None,

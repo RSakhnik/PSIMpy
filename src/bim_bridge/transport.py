@@ -45,11 +45,11 @@ class Transport:
             return BimBridgeError(f"HTTP_{status}", "Ответ сервера не содержит JSON ошибки",
                 status_code=status, retryable=status in (429, 502, 503, 504))
 
-    def open(self, method, path, payload=None):
+    def open(self, method, path, payload=None, *, headers=None):
         if not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
             raise ValueError("Нужен относительный путь API")
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        headers = dict(self._headers)
+        headers = dict(self._headers, **(headers or {}))
         if data is not None:
             headers["Content-Type"] = "application/json; charset=utf-8"
         attempts = self.retries + 1 if method == "GET" else 1
@@ -85,7 +85,11 @@ class Transport:
             raise BimBridgeError(error.get("Code", "API_ERROR"), str(error.get("Message", "Ошибка API")).replace(self._token, "[REDACTED]"), retryable=bool(error.get("IsRetryable")))
         return result
 
-    def download(self, path, destination, metadata, *, overwrite=False, decompress=False, progress=None):
+    def download(self, path, destination, metadata, *, overwrite=False, decompress=False, progress=None, resume=False):
+        if resume:
+            from ._download import download_resumable
+            return download_resumable(self, path, destination, metadata, overwrite=overwrite,
+                                      decompress=decompress, progress=progress)
         destination = Path(destination)
         if destination.exists() and not overwrite:
             raise FileExistsError(destination)

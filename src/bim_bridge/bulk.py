@@ -168,6 +168,14 @@ def iter_search_elements(client, model_key, part_ids, *, conditions=(), max_resu
     Если индекс не позволяет безопасно разделить выборку, возбуждается
     IncompleteResult. Ограничения воркера не отключаются.
     """
+    supports=getattr(client,'supports',None)
+    if supports is not None and supports('paged-search-v2',model_key=model_key):
+        from ._paging import iter_search_pages
+        for page in iter_search_pages(client,model_key,part_ids,conditions=conditions,page_size=max_results,
+                max_pages=max_queries,checkpoints=checkpoints,snapshot=snapshot,model_version_utc=model_version_utc,**options):
+            for element in page['Elements']:
+                yield dict(element,ModelVersionUtc=page['ModelVersionUtc'],SnapshotVerified=True)
+        return
     model_key = guid(model_key)
     if max_results <= 0 or max_queries <= 0:
         raise ValueError("Лимиты должны быть положительными")
