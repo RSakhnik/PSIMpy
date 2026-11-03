@@ -71,6 +71,47 @@ class ExportsTests(unittest.TestCase):
             self.assertEqual(client.submits[0][2]['client_request_id'],client.submits[1][2]['client_request_id'])
             with self.assertRaises(BimBridgeError) as caught:export_elements(client,MODEL,path,property_names=['Mass'])
             self.assertEqual(caught.exception.code,'EXPORT_CONFLICT')
+    def test_missing_task_without_artifact_is_resubmitted_once(self):
+        client=Client()
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'elements'
+            export_elements(client,MODEL,path)
+            path.unlink()
+            state_path=path.with_name(path.name+'.export.json')
+            state=json.loads(state_path.read_text())
+            old_request=state['ClientRequestId'];stale_task='00000000-0000-4000-8000-000000000001'
+            state['TaskId']=stale_task;state.pop('Metadata')
+            state_path.write_text(json.dumps(state))
+            original_task=client.task
+            def task(task_id):
+                if task_id==stale_task:
+                    def missing(**options):raise BimBridgeError('TASK_NOT_FOUND','expired',status_code=404)
+                    return types.SimpleNamespace(wait=missing)
+                return original_task(task_id)
+            client.task=task
+            artifact=export_elements(client,MODEL,path)
+            self.assertEqual(artifact.task_id,MODEL)
+            self.assertEqual(len(client.submits),2)
+            self.assertNotEqual(client.submits[1][2]['client_request_id'],old_request)
+
+    def test_missing_task_with_partial_bytes_is_not_silently_resubmitted(self):
+        client=Client()
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'elements'
+            export_elements(client,MODEL,path)
+            path.unlink()
+            path.with_name(path.name+'.inprogress').write_bytes(b'partial')
+            state_path=path.with_name(path.name+'.export.json')
+            state=json.loads(state_path.read_text());state['TaskId']='00000000-0000-4000-8000-000000000001';state.pop('Metadata')
+            state_path.write_text(json.dumps(state))
+            def missing_task(task_id):
+                def missing(**options):raise BimBridgeError('TASK_NOT_FOUND','expired',status_code=404)
+                return types.SimpleNamespace(wait=missing)
+            client.task=missing_task
+            with self.assertRaises(BimBridgeError) as caught:export_elements(client,MODEL,path)
+            self.assertEqual(caught.exception.code,'TASK_NOT_FOUND')
+            self.assertEqual(len(client.submits),1)
+
     def test_legacy_server_fails_capability_before_submit(self):
         client=Client();client.health=lambda:{'Capabilities':[]}
         with tempfile.TemporaryDirectory() as directory,self.assertRaises(BimBridgeError) as caught:

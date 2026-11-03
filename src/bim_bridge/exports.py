@@ -102,19 +102,35 @@ def export_artifact(client,operation,payload,destination,*,timeout=None,on_statu
             for block in iter(lambda:stream.read(1024*1024),b''):digest.update(block)
         if destination.stat().st_size==metadata.get('TotalLength') and digest.hexdigest()==str(metadata.get('Sha256','')).lower():
             return ExportArtifact(destination,state['TaskId'],metadata)
-    if not state.get('TaskId'):
-        if not client.supports(operation,model_key=payload['TargetModelKey']):
-            raise BimBridgeError('CAPABILITY_NOT_AVAILABLE',f'Worker не поддерживает {operation}')
-        if 'artifact-upload-v2' not in client.health().get('Capabilities',[]):
-            raise BimBridgeError('CAPABILITY_NOT_AVAILABLE','Manager не поддерживает durable artifact-upload-v2')
-        # Persist ClientRequestId before Submit. A lost Submit response is safely
-        # retried by repeating this high-level call with the same destination.
-        submit=dict(options);submit.setdefault('can_retry',False);submit.setdefault('max_attempts',1)
-        task=client.submit(operation,payload,target_model_key=payload['TargetModelKey'],required_capabilities=required,
-                           client_request_id=state['ClientRequestId'],**submit)
-        state['TaskId']=task.id;_atomic_json(state_path,state)
-    task=client.task(state['TaskId']);task.wait(timeout=timeout,on_status=on_status)
-    metadata=task.metadata()
+    for attempt in range(2):
+        if not state.get('TaskId'):
+            if not client.supports(operation,model_key=payload['TargetModelKey']):
+                raise BimBridgeError('CAPABILITY_NOT_AVAILABLE',f'Worker не поддерживает {operation}')
+            if 'artifact-upload-v2' not in client.health().get('Capabilities',[]):
+                raise BimBridgeError('CAPABILITY_NOT_AVAILABLE','Manager не поддерживает durable artifact-upload-v2')
+            # Keep ClientRequestId across an uncertain submit response.
+            submit=dict(options);submit.setdefault('can_retry',False);submit.setdefault('max_attempts',1)
+            task=client.submit(operation,payload,target_model_key=payload['TargetModelKey'],required_capabilities=required,
+                               client_request_id=state['ClientRequestId'],**submit)
+            state['TaskId']=task.id;_atomic_json(state_path,state)
+        task=client.task(state['TaskId'])
+        try:
+            task.wait(timeout=timeout,on_status=on_status)
+            metadata=task.metadata()
+        except BimBridgeError as error:
+            missing=error.code in ('TASK_NOT_FOUND','RESULT_EXPIRED','EXPIRED') or error.status_code in (404,410)
+            partial=destination.with_name(destination.name+'.inprogress')
+            download_state=destination.with_name(destination.name+'.download.json')
+            # A missing task may be resubmitted only before any result bytes or
+            # immutable metadata exist. Never carry partial chunks to a new TaskId.
+            pristine=not state.get('Metadata') and not destination.exists() and not partial.exists() and not download_state.exists()
+            if attempt or not missing or not pristine:
+                raise
+            state.pop('TaskId',None)
+            state['ClientRequestId']=str(uuid.uuid4())
+            _atomic_json(state_path,state)
+            continue
+        break
     state['Metadata']=metadata;_atomic_json(state_path,state)
     if destination.is_file():
         digest=hashlib.sha256()
