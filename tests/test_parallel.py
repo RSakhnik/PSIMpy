@@ -43,6 +43,30 @@ class ParallelTests(unittest.TestCase):
         self.assertGreater(farm.max_downloads,1);self.assertLessEqual(farm.max_downloads,2)
         self.assertLessEqual(farm.max_outstanding,4)
 
+    def test_two_worker_sdk_upload_and_download_overlap(self):
+        farm=self.farm(2,sdk=.04,upload=.08,download=.03,slow_first=True)
+        export=self.start(farm,count=12,task_prefetch=4)
+        self.assertEqual(len(list(export.artifacts())),12)
+        events=list(farm.timeline)
+        def spans(start,end):
+            opened={};result=[]
+            for kind,task,worker,at in events:
+                if kind==start:opened[task]=(at,worker)
+                elif kind==end and task in opened:
+                    begun,owner=opened.pop(task);result.append((task,owner,begun,at))
+            return result
+        sdk=spans('sdk-start','sdk-end')
+        uploads=spans('upload-start','upload-end')
+        downloads=spans('download-start','download-end')
+        self.assertEqual(len(sdk),12)
+        self.assertEqual(len(uploads),12)
+        self.assertEqual(len(downloads),12)
+        def overlap(a,b):return a[2]<b[3] and b[2]<a[3]
+        first=min(sdk,key=lambda item:farm.jobs[item[0]]['index'])
+        self.assertTrue(any(item[0]!=first[0] and item[3]<first[3] for item in sdk))
+        self.assertTrue(any(overlap(a,b) for a in sdk for b in uploads))
+        self.assertTrue(any(overlap(a,b) for a in sdk for b in downloads))
+        self.assertTrue(export.manifest['Complete'])
     def test_deterministic_reader_order_does_not_block_scheduler(self):
         farm=self.farm(2,slow_first=True);export=self.start(farm)
         order=[a.task_id for a in export.artifacts(completion_order=False)]

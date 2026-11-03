@@ -51,7 +51,7 @@ class Farm:
     def __init__(self, workers=2, *, sdk=.015, upload=.01, download=.005, slow_first=False, slow_worker=False):
         self.count=workers;self.sdk=sdk;self.upload=upload;self.download=download;self.slow_first=slow_first;self.slow_worker=slow_worker
         self.lock=threading.RLock();self.stop=threading.Event();self.queue=queue.Queue();self.jobs={};self.requests={}
-        self.threads=[];self.assignments=Counter();self.chunk_reads=Counter();self.downloads=Counter()
+        self.threads=[];self.timeline=[];self.assignments=Counter();self.chunk_reads=Counter();self.downloads=Counter()
         self.active_downloads=0;self.max_downloads=0;self.max_outstanding=0;self.max_pipeline_outstanding=0;self.submit_calls=0
         self.version=V1;self.bad_version=None;self.fail_first=False;self.fail_first_retryable=False;self.expire_once=None;self.expire_status_once=None
         self.interrupt_once=None;self.lost_submit=False;self.lost_all_submits=False;self.status_failure_once=None;self.disappear_once=False;self.requeues=0
@@ -69,6 +69,7 @@ class Farm:
             with self.lock:
                 self.assignments[number]+=1
                 job.update(State='RUNNING',WorkerInstanceId=f'worker-{number}')
+                self.timeline.append(('sdk-start',task_id,number,time.monotonic()))
                 if self.disappear_once:
                     self.disappear_once=False;self.requeues+=1;job['State']='QUEUED'
                     self.queue.put(task_id);slots.release();return
@@ -85,15 +86,18 @@ class Farm:
                     slots.release();continue
                 job['data']=binary(job['payload'],self.bad_version)
                 job['State']='RESULT_PREPARED'
+                self.timeline.append(('sdk-end',task_id,number,time.monotonic()))
             prepared.put(job)
 
     def _uploader(self, prepared, slots):
         while not self.stop.is_set():
             try:job=prepared.get(timeout=.02)
             except queue.Empty:continue
+            with self.lock:self.timeline.append(('upload-start',job['TaskId'],None,time.monotonic()))
             if self.stop.wait(self.upload):slots.release();return
             with self.lock:
                 if job['State']!='CANCELLED':job['State']='COMPLETED'
+                self.timeline.append(('upload-end',job['TaskId'],None,time.monotonic()))
             slots.release()
 
     def close(self):
@@ -167,7 +171,9 @@ class FakeTask:
     def download(self, path, **options):
         f=self.client.farm
         with f.lock:
-            f.downloads[self.id]+=1;f.active_downloads+=1;f.max_downloads=max(f.max_downloads,f.active_downloads)
+            f.downloads[self.id]+=1;f.timeline.append(('download-start',self.id,None,time.monotonic()));f.active_downloads+=1;f.max_downloads=max(f.max_downloads,f.active_downloads)
         try:return download_chunks(self.client._http,self.id,path,self.metadata(),**options)
         finally:
-            with f.lock:f.active_downloads-=1
+            with f.lock:
+                f.active_downloads-=1
+                f.timeline.append(('download-end',self.id,None,time.monotonic()))
