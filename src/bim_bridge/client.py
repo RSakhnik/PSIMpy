@@ -50,9 +50,10 @@ class Task:
         return self.client._http.json("GET", f"/tasks/{self.id}/result")
     def metadata(self):
         return self.client._http.json("GET", f"/tasks/{self.id}/result/metadata")
-    def download(self, destination, *, overwrite=False, decompress=False, progress=None, resume=True):
+    def download(self, destination, *, overwrite=False, decompress=False, progress=None, resume=True, telemetry=None):
         return self.client._http.download(f"/tasks/{self.id}/result/content", destination, self.metadata(),
-                                         overwrite=overwrite, decompress=decompress, progress=progress, resume=resume)
+                                         overwrite=overwrite, decompress=decompress, progress=progress, resume=resume,
+                                         telemetry=telemetry)
 
 class BimBridge:
     @classmethod

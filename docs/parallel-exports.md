@@ -65,6 +65,117 @@ WorkerProcessingElementsPerMin использует сумму worker-reported m
 
 Synthetic diagnostic: `PYTHONPATH=src;tests python tests/benchmark_parallel.py --output scaling.json --sdk-seconds 1 --upload-seconds .3 --download-seconds .3`. Это fake SDK regression diagnostic, не обещание production scaling.
 
+### Профиль конкретной выгрузки
+
+```python
+with client.export_spatial_parallel(model_key, destination, element_ids=elements) as export:
+    export.wait()
+    profile = export.profile()
+    profile.save_json('profile.json')
+    profile.save_csv('stages.csv')
+    profile.save_html('timeline.html')
+
+# Обычная выгрузка также возвращает профиль:
+artifact = client.export_spatial(model_key, 'spatial.bbsp', element_ids=elements)
+artifact.profile().save_html('single.html')
+```
+
+HTML открывается локально. `profile.compare(previous)` и `save_html(..., compare=previous)`
+предупреждают о различиях модели, snapshot, selection, geometry options, shard size и числа
+eligible workers. В JSON сохраняются прежние remote attempts и отдельные download attempts.
+CSV содержит `AttemptNumber` и `DownloadAttemptNumber`; повторная передача не затирает
+предыдущие строки. Отсутствующее измерение показывается как `null`/пустое поле/«—», а не 0.
+Если Manager повторно назначил один TaskId, прежние назначения отображаются отдельными
+attempts с AssignmentId, worker и причиной сбоя. `AttemptQueueWaitMs` относится к одному
+назначению; прежнее `QueueWaitMs` в task status сохраняет накопительное значение для
+совместимости. История прежних назначений сохраняется вместе с завершённым task state.
+`manager-task-acceptance` измеряет обработку первой подачи TaskId внутри Manager;
+повторный идемпотентный submit её не перезаписывает. `manager-assignment` измеряет
+выбор worker и изменение состояния под блокировкой для каждого назначения отдельно.
+`manager-preparation` измеряет первый BeginOrResumeArtifactAsync от входа в Manager
+до завершения создания durable upload state, включая ожидание ворот подготовки.
+Повторный идемпотентный вызов сохраняет исходное значение. Время передачи ответа
+к worker в этот интервал не входит.
+
+`WallMs` — монотонное время соответствующего компонента; `ActiveMs` — сумма измеренных
+участков работы. Значения разных workers и вложенных стадий не складывают в end-to-end wall.
+SDK traversal, mesh read, bounds и binary encoding измеряются в worker; запись кадров и
+финализация файла — отдельные wall интервалы. `model-access` показывает ожидание
+закреплённого контекста модели. `snapshot-index` включает ожидание serial cache,
+построение или чтение индекса; он может перекрываться с SDK traversal.
+`spool-preparation` измеряет запись durable descriptor, перенос готового файла и
+первую публикацию spool state. Его telemetry checkpoint записывается отдельно:
+сбой этого checkpoint не отменяет подготовленный artifact.
+`sdk-dispatch-wait` суммирует время от постановки каждого чтения SpatialSdkSource до
+входа в его делегат на SDK Dispatcher, включая ожидание serial lane. Это wall
+интервал, который не входит в active mesh/vertex read. Он не охватывает вызовы SDK
+из других компонентов и не учитывает отменённые вызовы, которые не начали выполняться.
+В Detailed доступны per-task hits/misses индекса. Если индекс не использовался, его время остаётся
+неизвестным, а не нулевым.
+Профиль также содержит entries, bytes и evictions обоих worker caches на момент
+завершения задачи. Это накопительные снимки worker; суммировать их по shards нельзя.
+Для выключенного cache значения остаются неизвестными.
+В таблице workers `AssignedElements` — сумма размеров назначенных shards по попыткам;
+`ProcessedSources` и `ProcessingSourcesPerMinute` рассчитываются по фактическим
+`SourceElements` worker и processing wall. При неполной telemetry скорость неизвестна.
+Manager сообщает queue wait, SHA verification, artifact publication и время чтения
+каждого result chunk. Worker upload включает retry и ожидания RPC. `UploadRetryCount`
+и `worker-upload-retry-wait` относятся к сохранённому artifact и переживают рестарт
+worker. Они записываются при retry, а Manager принимает их вместе с первым успешным
+CompleteArtifact; потерянный ACK после этого момента не входит в статус завершённой
+задачи. Retry может произойти ещё в Reserve или Prepare, до начала измерения
+`UploadWallMs`, поэтому эти два интервала не следует вычитать друг из друга.
+Python отдельно сообщает snapshot pin, selection/sharding, submit, status RPC,
+scheduler wait, получение chunks, проверку сохранённого префикса, локальную публикацию и
+проверку spatial file. `client-chunk-acquire` включает RPC и локальный checkpoint/fsync;
+`manager-chunk-serving` охватывает только чтение metadata и bytes внутри Manager до
+сериализации ответа. Разность этих двух длительностей не является точной network latency.
+При неизменном статусе Python сохраняет накопленное время RPC-опросов не реже раза в секунду;
+последняя доля секунды может отсутствовать после аварийного завершения процесса. Изменение
+состояния, worker identity и новые server metrics записываются сразу.
+
+Timeline использует UTC отметки одного Manager (`Created`, `Assigned`, `Started`, `Prepared`,
+`Completed`). По ним видны перекрытия shards; длительности стадий рассчитываются отдельно
+монотонными часами. Если отметки нет, участок timeline помечается неизвестным. `TotalWall`
+суммирует активные запуски Python session и исключает время между остановкой и resume.
+Статистика `client.statistics()` относится ко всему процессу Manager, а не к одному export.
+Старые worker/Manager могут не сообщать новые поля. `TelemetryMode=Basic` по умолчанию
+настраивается в worker; `Detailed` добавляет счётчики mesh cache, `Off` отключает per-task
+worker profile. Остальные компоненты пока не имеют общего переключателя режимов.
+
+### Сопоставимые synthetic прогоны
+
+04.11.2026, четыре парных прогона исходных HEAD и рабочей версии на одном компьютере.
+Transfer fixture: 786432 bytes, 12 chunks, искусственная задержка 20 ms/chunk.
+Медиана окна 1: 464.22 → 481.02 ms (+3.6%); окна 3: 221.48 → 217.78 ms (−1.7%).
+Число chunk calls осталось 12. Разброс и задержка fixture не позволяют считать эти числа
+измерением реального Pilot или доказательством ускорения/регрессии.
+После добавления retry telemetry тот же fixture повторён четырьмя парами.
+Медиана окна 1: 475.84 → 471.57 ms (−0.9%); окна 3: 207.19 → 216.13 ms (+4.3%).
+Знаки изменений между сериями различаются, поэтому заметной устойчивой регрессии
+на этом fixture не выявлено. В нём нет инъекции отказов: запись retry checkpoint
+этот прогон не измеряет.
+Python fixture: 30000 vertices, BBSPAT2 файл 848110 bytes в обеих версиях.
+Медиана binary write: 4.64 → 4.45 ms, validation: 91.57 → 90.67 ms;
+tracemalloc peak для validation: 95978 → 95975 bytes. Tracemalloc не учитывает native
+allocations. Кэш SDK и общая память worker этим fixture не измеряются.
+Числа отдельных запусков сохранены в [telemetry-benchmark.json](telemetry-benchmark.json).
+
+Multi-worker fixture: 18 shards, fake SDK 100 ms/shard, upload 30 ms/shard, download
+30 ms/shard, три парных запуска. Медиана wall для 1/2/3 workers: baseline
+2.187/1.203/1.187 s; после устранения повторной записи неизменного статуса
+2.219/1.203/1.218 s. Отдельные запуски заметно различались, поэтому этот fixture
+не позволяет надёжно утверждать небольшую регрессию или ускорение. SDK cache hit ratio,
+memory worker и реальная пропускная способность Pilot отдельно не измерены.
+
+Offline profile fixture: 1000 synthetic shards, 1000 attempts и 27003 stage rows.
+Пять прогонов `python tools/benchmark_profile.py --shards 1000 --repeats 5` до и после
+уменьшения stage rows дали медиану построения 53.43 → 21.42 ms, HTML rendering
+256.02 → 249.05 ms. Отдельный прогон с tracemalloc показал peak 68.99 → 38.75 MB
+Python allocations. HTML в обоих вариантах занял 5.05 MB. Это стоимость отчёта после
+выгрузки, а не overhead SDK или передачи; данные fixtures не доказывают изменение
+производительности реального Pilot.
+
 ## Стенд на двух машинах
 
 Открыть одну и ту же модель/snapshot на двух Pilot-BIM, проверить разные MachineName/DurableWorkerId и независимые spool owner locks. Обновление Manager/worker устанавливается отдельно в согласованное окно. Проверить workers(), capabilities и model keys. Сначала выполнить небольшой bounds-only parallel export, сопоставить Sources/геометрию с одиночным API; проверить распределение TaskId, overlap, queue<=2 и download<=2. Затем отключить один worker/сеть, перезапустить Python с тем же каталогом и проверить requeue/resume без повторного download READY файлов. После этого проверить full meshes, размер повторных buffers, квоты и disk/SHA bottlenecks. Реальные Pilot процессы и рабочий Colab автоматическими тестами не затрагиваются.

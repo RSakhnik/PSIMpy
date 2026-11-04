@@ -7,6 +7,7 @@ from .pilot import build_pilot_adapter
 from ._paging import iter_search_pages
 from .exports import ExportArtifact
 from .binary_spatial import SpatialArtifact, SpatialBufferSection
+from .profile import ExportProfile
 
 __all__ = ["BimBridge", "Task", "Condition", "Element", "FileReference", "BimBridgeError",
            "TaskFailed", "TaskTimeout", "IncompleteResult", "Checkpoints", "ExportSnapshot", "select_parts",
@@ -15,3 +16,4 @@ __all__ = ["BimBridge", "Task", "Condition", "Element", "FileReference", "BimBri
 
 from .parallel import ParallelExport, export_spatial_parallel
 __all__ += ["ParallelExport", "export_spatial_parallel"]
+__all__ += ["ExportProfile"]

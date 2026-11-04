@@ -39,6 +39,15 @@ class ChunkDownloadTests(unittest.TestCase):
         self.source=ChunkSource(b'0123456789')
     def download(self,**options):
         return download_chunks(self.source,TASK,self.path,self.source.metadata,**options)
+    def test_manager_serving_time_is_optional_and_scoped_to_received_chunks(self):
+        telemetry={}
+        self.source.transform=lambda response:dict(response,ManagerServeWallMs=1.5)
+        self.download(telemetry=telemetry)
+        self.assertEqual(telemetry['ManagerServeWallMs'],4.5)
+        self.path.unlink()
+        self.source=ChunkSource(b'0123456789')
+        self.download(telemetry=telemetry)
+        self.assertIsNone(telemetry['ManagerServeWallMs'])
     def test_resume_recovers_crash_before_initial_empty_journal_publication(self):
         with patch('bim_bridge._chunk_download._state',side_effect=RuntimeError('crash before journal')):
             with self.assertRaises(RuntimeError):self.download()
@@ -57,12 +66,23 @@ class ChunkDownloadTests(unittest.TestCase):
     def test_restart_reads_first_missing_chunk_and_preserves_destination(self):
         self.path.write_bytes(b'previous')
         self.source.interrupt=1
-        with self.assertRaises(BimBridgeError):self.download(overwrite=True)
+        failed={}
+        with self.assertRaises(BimBridgeError):self.download(overwrite=True,telemetry=failed)
+        self.assertEqual(failed['ChunkCalls'],2)
+        self.assertEqual(failed['DownloadedBytes'],4)
+        self.assertGreater(failed['ChunkTransferWallMs'],0)
         self.assertEqual(self.path.read_bytes(),b'previous')
         self.assertEqual(self.path.with_name('artifact.inprogress').read_bytes(),b'0123')
         self.source=ChunkSource(b'0123456789')
-        self.download(overwrite=True)
+        telemetry={}
+        self.download(overwrite=True,telemetry=telemetry)
         self.assertEqual(self.source.calls,[1,2])
+        self.assertEqual(telemetry['ResumedBytes'],4)
+        self.assertEqual(telemetry['DownloadedBytes'],6)
+        self.assertEqual(telemetry['ChunkCalls'],2)
+        self.assertGreater(telemetry['ResumeValidationWallMs'],0)
+        self.assertGreater(telemetry['ChunkTransferWallMs'],0)
+        self.assertGreater(telemetry['LocalFinalizeWallMs'],0)
         self.assertEqual(self.path.read_bytes(),self.source.data)
         self.assertEqual(list(Path(self.directory.name).iterdir()),[self.path])
     def test_changed_artifact_does_not_read_or_append(self):

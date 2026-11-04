@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import uuid
+import time
 
 from .bulk import ExportSnapshot, _atomic_json
 from .errors import BimBridgeError, IncompleteResult
@@ -16,6 +17,14 @@ class ExportArtifact:
     path: Path
     task_id: str
     metadata: dict
+    profile_data: dict = None
+
+    def profile(self):
+        from .profile import ExportProfile
+        if self.profile_data is None:
+            return ExportProfile(dict(Shards=[dict(ShardId=0, TaskId=self.task_id,
+                State='READY', Metadata=self.metadata)]))
+        return ExportProfile(self.profile_data)
 
     def spatial(self):
         from .binary_spatial import SpatialArtifact
@@ -82,6 +91,7 @@ def _selection(model_key,part_ids,conditions,logical_operator,model_version_utc,
 
 
 def export_artifact(client,operation,payload,destination,*,timeout=None,on_status=None,progress=None,**options):
+    started=time.perf_counter_ns()
     required=[operation]
     if operation=='export-spatial':required.append('spatial-binary-v2')
     destination=Path(destination)
@@ -101,7 +111,7 @@ def export_artifact(client,operation,payload,destination,*,timeout=None,on_statu
         with destination.open('rb') as stream:
             for block in iter(lambda:stream.read(1024*1024),b''):digest.update(block)
         if destination.stat().st_size==metadata.get('TotalLength') and digest.hexdigest()==str(metadata.get('Sha256','')).lower():
-            return ExportArtifact(destination,state['TaskId'],metadata)
+            return ExportArtifact(destination,state['TaskId'],metadata,state.get('Profile'))
     for attempt in range(2):
         if not state.get('TaskId'):
             if not client.supports(operation,model_key=payload['TargetModelKey']):
@@ -115,7 +125,7 @@ def export_artifact(client,operation,payload,destination,*,timeout=None,on_statu
             state['TaskId']=task.id;_atomic_json(state_path,state)
         task=client.task(state['TaskId'])
         try:
-            task.wait(timeout=timeout,on_status=on_status)
+            status=task.wait(timeout=timeout,on_status=on_status) or {}
             metadata=task.metadata()
         except BimBridgeError as error:
             missing=error.code in ('TASK_NOT_FOUND','RESULT_EXPIRED','EXPIRED') or error.status_code in (404,410)
@@ -137,9 +147,40 @@ def export_artifact(client,operation,payload,destination,*,timeout=None,on_statu
         with destination.open('rb') as stream:
             for block in iter(lambda:stream.read(1024*1024),b''):digest.update(block)
         if destination.stat().st_size==metadata.get('TotalLength') and digest.hexdigest()==str(metadata.get('Sha256','')).lower():
-            return ExportArtifact(destination,task.id,metadata)
-    task.download(destination,overwrite=destination.exists(),progress=progress,resume=True)
-    return ExportArtifact(destination,task.id,metadata)
+            return ExportArtifact(destination,task.id,metadata,state.get('Profile'))
+    download_started=time.perf_counter_ns()
+    transfer={}
+    task.download(destination,overwrite=destination.exists(),progress=progress,resume=True,telemetry=transfer)
+    download_ms=(time.perf_counter_ns()-download_started)/1e6
+    previous=(state.get('Profile') or {}).get('TotalWall') or 0
+    profile=dict(ExportSessionId=identity,ModelKey=payload['TargetModelKey'],
+        ModelVersionUtc=payload.get('ModelVersionUtc'),
+        Options={key:value for key,value in payload.items() if key not in ('ElementIds','Conditions','ModelPartIds')},
+        ShardSize=None,
+        TotalWall=previous+(time.perf_counter_ns()-started)/1e9,Complete=True,
+        Shards=[dict(ShardId=0,TaskId=task.id,State='READY',ElementCount=len(payload.get('ElementIds') or []),
+            ElementIdentity=hashlib.sha256(json.dumps([payload.get('ElementIds'),payload.get('Conditions'),
+                payload.get('ModelPartIds')],sort_keys=True).encode()).hexdigest(),
+            WorkerInstanceId=status.get('WorkerInstanceId'),ProcessingWallMs=status.get('ProcessingWallMs'),
+            QueueWaitMs=status.get('QueueWaitMs'),
+            AttemptQueueWaitMs=status.get('AttemptQueueWaitMs'),
+            AssignmentId=status.get('AssignmentId'),
+            RemoteAttemptNumber=status.get('AttemptNumber'),
+            ManagerAttempts=status.get('PriorAttempts'),
+            TaskAcceptanceWallMs=status.get('TaskAcceptanceWallMs'),
+            AssignmentWallMs=status.get('AssignmentWallMs'),
+            ResultPreparationWallMs=status.get('ResultPreparationWallMs'),
+            HashVerificationMs=status.get('HashVerificationMs'),
+            ArtifactPublicationMs=status.get('ArtifactPublicationMs'),
+            UploadWallMs=status.get('UploadWallMs'),
+            UploadRetryCount=status.get('UploadRetryCount'),
+            UploadRetryWaitMs=status.get('UploadRetryWaitMs'),
+            SpatialPerformance=status.get('SpatialPerformance'),DownloadWallMs=download_ms,
+            **transfer,
+            StatusTimes={key:status[key] for key in ('CreatedAtUtc','AssignedAtUtc','StartedAtUtc','PreparedAtUtc','CompletedAtUtc')
+                         if status.get(key) is not None},Metadata=metadata)])
+    state['Profile']=profile;_atomic_json(state_path,state)
+    return ExportArtifact(destination,task.id,metadata,profile)
 
 
 def export_elements(client,model_key,destination,*,part_ids=None,conditions=(),logical_operator='And',

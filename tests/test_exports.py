@@ -43,6 +43,7 @@ class ExportsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'elements.ndjson.gz'
             artifact=export_elements(client,MODEL,path,part_ids=[PART],property_names=['Name'])
+            self.assertEqual(artifact.profile().data['CompletedShards'],1)
             self.assertEqual(len(list(artifact.iter_elements())),1)
             self.assertEqual(artifact.to_dataframe().iloc[0]['Common.Name'],'Pipe')
             self.assertEqual(client.submits[0][0],'export-elements')

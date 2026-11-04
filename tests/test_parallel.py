@@ -28,6 +28,10 @@ class ParallelTests(unittest.TestCase):
     def test_one_worker_many_shards_and_snapshot_pinned_before_submission(self):
         farm=self.farm(1);export=self.start(farm).wait(10)
         self.assertTrue(export.manifest['Complete']);self.assertEqual(len(farm.jobs),9)
+        self.assertGreater(export.manifest['SnapshotPinWallMs'],0)
+        self.assertGreater(export.manifest['SelectionShardingWallMs'],0)
+        self.assertGreater(export.manifest['SchedulerWaitWallMs'],0)
+        self.assertTrue(all(s['MonitoringRpcWallMs']>0 for s in export.manifest['Shards']))
         self.assertEqual(export.summary['TaskPrefetch'],2)
         self.assertLessEqual(farm.max_outstanding,2)
         for job in farm.jobs.values():
@@ -80,12 +84,24 @@ class ParallelTests(unittest.TestCase):
         farm=self.farm();farm.disappear_once=True;export=self.start(farm).wait(10)
         self.assertTrue(export.manifest['Complete']);self.assertEqual(farm.requeues,1)
         self.assertEqual(len(farm.jobs),9)
+        attempts=export.profile().data['Attempts']
+        self.assertEqual(len(attempts),10)
+        prior=[item for item in attempts if (item.get('Error') or {}).get('Code')=='LEASE_EXPIRED']
+        self.assertEqual(len(prior),1)
+        self.assertEqual(prior[0]['QueueWaitMs'],0.5)
+        self.assertNotEqual(prior[0]['AssignmentId'],
+                            next(item['AssignmentId'] for item in attempts
+                                 if item['TaskId']==prior[0]['TaskId'] and item is not prior[0]))
     def test_interrupted_download_resumes_from_next_chunk(self):
         farm=self.farm();farm.interrupt_once=0;export=self.start(farm).wait(10)
         task_id=next(iter(farm.jobs))
         self.assertEqual(farm.downloads[task_id],2)
         self.assertEqual(farm.chunk_reads[task_id,0],1)
         self.assertEqual(farm.chunk_reads[task_id,1],2)
+        attempts=export.manifest['Shards'][0]['DownloadAttempts']
+        self.assertEqual([a['Success'] for a in attempts],[False,True])
+        self.assertGreater(attempts[0]['DownloadWallMs'],0)
+        self.assertEqual(len(export.profile().data['DownloadAttempts']),10)
     def test_restart_reuses_completed_artifacts_and_unfinished_task_ids(self):
         farm=self.farm(sdk=.03,download=.01);export=self.start(farm,count=15)
         deadline=time.monotonic()+5

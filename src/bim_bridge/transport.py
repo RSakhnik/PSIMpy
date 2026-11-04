@@ -98,14 +98,15 @@ class Transport:
         if type(index) is not int or index < 0:raise ValueError('Invalid chunk index')
         return self.json('GET', f'/tasks/{task_id}/result/chunks/{index}')
 
-    def download(self, path, destination, metadata, *, overwrite=False, decompress=False, progress=None, resume=False):
+    def download(self, path, destination, metadata, *, overwrite=False, decompress=False, progress=None, resume=False,
+                 telemetry=None):
         if metadata.get('DownloadProtocol') == 'token-http-chunks-v2':
             from ._chunk_download import download_chunks
             from .types import guid
             parts=path.strip('/').split('/')
             if len(parts) not in (3,4) or parts[0]!='tasks' or parts[2]!='result' or (len(parts)==4 and parts[3]!='content'):raise ValueError('Invalid result path')
             return download_chunks(self,guid(parts[1]),destination,metadata,overwrite=overwrite,
-                                   decompress=decompress,progress=progress,resume=resume)
+                                   decompress=decompress,progress=progress,resume=resume,telemetry=telemetry)
         if resume:
             from ._download import download_resumable
             return download_resumable(self, path, destination, metadata, overwrite=overwrite,

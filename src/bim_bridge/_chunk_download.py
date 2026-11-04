@@ -3,10 +3,12 @@ import base64
 import gzip
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import tempfile
+from time import perf_counter_ns
 
 from ._download import _hash, _state
 from ._files import publish
@@ -14,7 +16,8 @@ from .errors import BimBridgeError
 
 
 def download_chunks(transport, task_id, destination, metadata, *, overwrite=False,
-                    decompress=False, progress=None, resume=True):
+                    decompress=False, progress=None, resume=True, telemetry=None):
+    resume_started = perf_counter_ns() if telemetry is not None else None
     destination = Path(destination)
     if destination.exists() and not overwrite:
         raise FileExistsError(destination)
@@ -57,11 +60,29 @@ def download_chunks(transport, task_id, destination, metadata, *, overwrite=Fals
     digest=hashlib.sha256()
     with partial.open('rb') as stream:
         for block in iter(lambda:stream.read(1024*1024),b''): digest.update(block)
+    if telemetry is not None:
+        telemetry['ResumeValidationWallMs'] = (perf_counter_ns()-resume_started)/1e6
+        telemetry['ResumedBytes'] = count
+        telemetry['ChunkCalls'] = 0
+    transfer_started = perf_counter_ns() if telemetry is not None else None
+    serve_ms = 0.0
+    serve_known = True
     try:
         with partial.open('r+b') as stream:
             stream.seek(count)
             for index in range((count+size-1)//size,chunks):
-                response=transport.rpc('ReadResultChunk',TaskId=task_id,ChunkIndex=index)
+                if telemetry is not None: telemetry['ChunkCalls'] += 1
+                try:
+                    response=transport.rpc('ReadResultChunk',TaskId=task_id,ChunkIndex=index)
+                except BaseException:
+                    serve_known = False
+                    raise
+                if telemetry is not None:
+                    value=response.get('ManagerServeWallMs')
+                    if type(value) in (int,float) and math.isfinite(value) and value>=0:
+                        serve_ms += value
+                    else:
+                        serve_known = False
                 if response.get('TaskId','').lower()!=task_id.lower() or response.get('ChunkIndex')!=index:
                     raise BimBridgeError('INVALID_RESPONSE','Идентификатор chunk не совпал')
                 try: data=base64.b64decode(response['Data'],validate=True)
@@ -73,10 +94,15 @@ def download_chunks(transport, task_id, destination, metadata, *, overwrite=Fals
                 digest.update(data);count+=len(data)
                 _state(state_path,{'Identity':identity,'Downloaded':count,'PartialSha256':digest.hexdigest()})
                 if progress: progress(count,length)
+        if telemetry is not None:
+            telemetry['ChunkTransferWallMs'] = (perf_counter_ns()-transfer_started)/1e6
+            telemetry['DownloadedBytes'] = count-telemetry['ResumedBytes']
+            telemetry['ManagerServeWallMs'] = serve_ms if serve_known else None
         if count!=length or digest.hexdigest()!=sha.lower():
             partial.unlink();state_path.unlink()
             raise BimBridgeError('INTEGRITY_ERROR','TotalLength или SHA-256 artifact не совпал')
         temporary=None
+        finalize_started = perf_counter_ns() if telemetry is not None else None
         try:
             source_path=partial
             if decompress and (metadata.get('ContentEncoding') or '').lower()=='gzip':
@@ -86,10 +112,16 @@ def download_chunks(transport, task_id, destination, metadata, *, overwrite=Fals
                 source_path=temporary
             publish(source_path,destination,overwrite)
             partial.unlink(missing_ok=True);state_path.unlink()
+            if telemetry is not None:
+                telemetry['LocalFinalizeWallMs'] = (perf_counter_ns()-finalize_started)/1e6
             return destination
         finally:
             if temporary and os.path.exists(temporary):os.unlink(temporary)
     except BaseException:
+        if telemetry is not None:
+            telemetry.setdefault('ChunkTransferWallMs', (perf_counter_ns()-transfer_started)/1e6)
+            telemetry['DownloadedBytes'] = count-telemetry['ResumedBytes']
+            telemetry['ManagerServeWallMs'] = serve_ms if serve_known else None
         if not resume:
             partial.unlink(missing_ok=True);state_path.unlink(missing_ok=True)
         raise

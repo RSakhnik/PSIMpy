@@ -1,0 +1,387 @@
+{
+  "Date": "2026-11-04",
+  "BaselineCommits": {
+    "PSIMpy": "ef4fcc2",
+    "Manager": "eeb9515"
+  },
+  "Candidate": "uncommitted working copies",
+  "RunOrder": "baseline, candidate, repeated four times",
+  "TransferFixture": {
+    "Bytes": 786432,
+    "Chunks": 12,
+    "InjectedChunkLatencyMs": 20,
+    "Windows": {
+      "1": {
+        "baseline": {
+          "ElapsedMs": [
+            476.3997,
+            462.7322,
+            455.3006,
+            465.6997
+          ],
+          "MedianMs": 464.21595
+        },
+        "current": {
+          "ElapsedMs": [
+            466.1583,
+            483.7923,
+            502.8357,
+            478.2572
+          ],
+          "MedianMs": 481.02475000000004
+        }
+      },
+      "3": {
+        "baseline": {
+          "ElapsedMs": [
+            223.944,
+            219.0116,
+            206.3447,
+            251.1201
+          ],
+          "MedianMs": 221.4778
+        },
+        "current": {
+          "ElapsedMs": [
+            213.3803,
+            223.6,
+            218.2795,
+            217.2896
+          ],
+          "MedianMs": 217.78455000000002
+        }
+      }
+    }
+  },
+  "SpatialFixture": {
+    "Vertices": 30000,
+    "Metrics": {
+      "BinaryWrite": {
+        "baseline": {
+          "ElapsedMs": [
+            4.715000279247761,
+            4.407300613820553,
+            4.805900156497955,
+            4.555900581181049
+          ],
+          "MedianMs": 4.635450430214405,
+          "PeakTracemallocBytes": [
+            107959,
+            107965,
+            107965,
+            107965
+          ]
+        },
+        "current": {
+          "ElapsedMs": [
+            4.783200100064278,
+            4.400299862027168,
+            4.398900084197521,
+            4.49259951710701
+          ],
+          "MedianMs": 4.446449689567089,
+          "PeakTracemallocBytes": [
+            107956,
+            107962,
+            107962,
+            107962
+          ]
+        }
+      },
+      "BinaryValidate": {
+        "baseline": {
+          "ElapsedMs": [
+            88.87160010635853,
+            91.37450065463781,
+            92.24200062453747,
+            91.75780043005943
+          ],
+          "MedianMs": 91.56615054234862,
+          "PeakTracemallocBytes": [
+            95492,
+            95978,
+            95978,
+            95978
+          ]
+        },
+        "current": {
+          "ElapsedMs": [
+            90.31519945710897,
+            90.19399993121624,
+            91.02350007742643,
+            122.06649966537952
+          ],
+          "MedianMs": 90.6693497672677,
+          "PeakTracemallocBytes": [
+            95969,
+            95975,
+            95975,
+            95975
+          ]
+        }
+      },
+      "JsonWrite": {
+        "baseline": {
+          "ElapsedMs": [
+            705.4872000589967,
+            700.8934002369642,
+            702.733600512147,
+            710.9859995543957
+          ],
+          "MedianMs": 704.1104002855718,
+          "PeakTracemallocBytes": [
+            149508,
+            149514,
+            149514,
+            149514
+          ]
+        },
+        "current": {
+          "ElapsedMs": [
+            696.5916994959116,
+            704.2562002316117,
+            705.7565003633499,
+            714.2858002334833
+          ],
+          "MedianMs": 705.0063502974808,
+          "PeakTracemallocBytes": [
+            149505,
+            149511,
+            149511,
+            149511
+          ]
+        }
+      },
+      "JsonRead": {
+        "baseline": {
+          "ElapsedMs": [
+            245.88899966329336,
+            245.4079994931817,
+            245.50259951502085,
+            243.2755995541811
+          ],
+          "MedianMs": 245.45529950410128,
+          "PeakTracemallocBytes": [
+            8797723,
+            8797723,
+            8797723,
+            8797723
+          ]
+        },
+        "current": {
+          "ElapsedMs": [
+            243.47840063273907,
+            244.7052001953125,
+            243.55880077928305,
+            247.37180024385452
+          ],
+          "MedianMs": 244.13200048729777,
+          "PeakTracemallocBytes": [
+            8797723,
+            8797723,
+            8797723,
+            8797723
+          ]
+        }
+      }
+    },
+    "BinaryBytes": {
+      "baseline": 848110,
+      "current": 848110
+    }
+  },
+  "Limitations": [
+    "Synthetic transfer latency dominates RPC overhead",
+    "No real Pilot SDK or native allocation measurement",
+    "Four runs do not establish small regressions",
+    "Parallel fixture varies under host scheduling; the optimized candidate avoids repeated manifest writes on unchanged polls"
+  ],
+  "ParallelFixture": {
+    "Shards": 18,
+    "SdkSecondsPerShard": 0.1,
+    "UploadSecondsPerShard": 0.03,
+    "DownloadSecondsPerShard": 0.03,
+    "Workers": {
+      "1": {
+        "baseline": {
+          "WallSeconds": [
+            2.1869999999180436,
+            2.3279999997466803,
+            2.1559999994933605
+          ],
+          "MedianSeconds": 2.1869999999180436
+        },
+        "current": {
+          "WallSeconds": [
+            2.468999999575317,
+            2.1720000002533197,
+            2.1559999994933605
+          ],
+          "MedianSeconds": 2.1720000002533197
+        },
+        "optimized": {
+          "WallSeconds": [
+            2.218999999575317,
+            2.3119999999180436,
+            2.1720000002533197
+          ],
+          "MedianSeconds": 2.218999999575317
+        }
+      },
+      "2": {
+        "baseline": {
+          "WallSeconds": [
+            1.2029999997466803,
+            1.2030000006780028,
+            1.6569999996572733
+          ],
+          "MedianSeconds": 1.2030000006780028
+        },
+        "current": {
+          "WallSeconds": [
+            1.2659999998286366,
+            1.2340000001713634,
+            1.7030000006780028
+          ],
+          "MedianSeconds": 1.2659999998286366
+        },
+        "optimized": {
+          "WallSeconds": [
+            1.2029999997466803,
+            1.2030000006780028,
+            1.1880000000819564
+          ],
+          "MedianSeconds": 1.2029999997466803
+        }
+      },
+      "3": {
+        "baseline": {
+          "WallSeconds": [
+            1.1869999999180436,
+            1.7969999993219972,
+            1.1720000002533197
+          ],
+          "MedianSeconds": 1.1869999999180436
+        },
+        "current": {
+          "WallSeconds": [
+            1.25,
+            1.531000000424683,
+            1.1880000000819564
+          ],
+          "MedianSeconds": 1.25
+        },
+        "optimized": {
+          "WallSeconds": [
+            1.1880000000819564,
+            1.2180000003427267,
+            1.375
+          ],
+          "MedianSeconds": 1.2180000003427267
+        }
+      }
+    }
+  },
+  "ProfileFixture": {
+    "Fixture": "Offline synthetic, 1000 shards, 1000 attempts, 27003 stages; five repetitions each",
+    "BeforeCompactStages": {
+      "BuildMs": [
+        44.0293,
+        65.123,
+        52.7896,
+        53.4323,
+        80.5731
+      ],
+      "BuildMedianMs": 53.4323,
+      "HtmlMs": [
+        253.2888,
+        253.6063,
+        256.1671,
+        256.3897,
+        256.0203
+      ],
+      "HtmlMedianMs": 256.0203,
+      "TracemallocPeakBytes": 68994589,
+      "HtmlBytes": 5051460,
+      "Attempts": 1000,
+      "Stages": 27003,
+      "Shards": 1000,
+      "Repeats": 5,
+      "Description": "Offline 1000-shard synthetic profile; build and HTML render timed separately; tracemalloc peak measured in a separate traced run, not comparable to process RSS."
+    },
+    "AfterCompactStages": {
+      "BuildMs": [
+        21.2709,
+        21.4159,
+        21.5228,
+        21.5277,
+        20.9984
+      ],
+      "BuildMedianMs": 21.4159,
+      "HtmlMs": [
+        255.9712,
+        246.9795,
+        250.5032,
+        249.0466,
+        247.4485
+      ],
+      "HtmlMedianMs": 249.0466,
+      "TracemallocPeakBytes": 38754589,
+      "HtmlBytes": 5051460,
+      "Attempts": 1000,
+      "Stages": 27003,
+      "Shards": 1000,
+      "Repeats": 5
+    },
+    "Interpretation": "Post-export report creation only; tracemalloc peak from a separate traced run; HTML bytes unchanged."
+  },
+  "TransferFixtureAfterRetryTelemetry": {
+    "Bytes": 786432,
+    "Chunks": 12,
+    "InjectedChunkLatencyMs": 20,
+    "RunOrder": "baseline,current repeated four times",
+    "Windows": {
+      "1": {
+        "baseline": {
+          "ElapsedMs": [
+            480.7483,
+            472.0428,
+            478.1941,
+            473.4812
+          ],
+          "MedianMs": 475.83765
+        },
+        "current": {
+          "ElapsedMs": [
+            476.6659,
+            473.9538,
+            460.1077,
+            469.1841
+          ],
+          "MedianMs": 471.56895
+        }
+      },
+      "3": {
+        "baseline": {
+          "ElapsedMs": [
+            218.2898,
+            198.465,
+            210.9806,
+            203.3975
+          ],
+          "MedianMs": 207.18905
+        },
+        "current": {
+          "ElapsedMs": [
+            211.2885,
+            209.2328,
+            220.9777,
+            226.7425
+          ],
+          "MedianMs": 216.1331
+        }
+      }
+    },
+    "Caveat": "Synthetic transfer benchmark; no injected failures, so retry checkpoints are not exercised."
+  }
+}

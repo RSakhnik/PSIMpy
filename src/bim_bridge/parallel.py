@@ -144,6 +144,8 @@ class ParallelExport:
         self._download_workers = download_workers; self._max_retries = max_shard_retries
         self._max_source_elements = max_source_elements
         self._output_limit = max_output_bytes; self._started = time.monotonic(); self._ended = None
+        self._last_save_ns = 0
+        self._scheduler_wait_ms = 0.0
         self._manifest_path = self.directory / 'manifest.json'
         self._download_local = threading.local(); self._download_clients = []
         try:
@@ -170,11 +172,17 @@ class ParallelExport:
             else:
                 if element_ids is None:
                     raise ValueError('Новый parallel export требует explicit element_ids')
+                pin_started = time.perf_counter_ns()
                 version = utc(model_version_utc) if model_version_utc is not None else _pin(client, model_key)
+                pin_wall_ms = ((time.perf_counter_ns() - pin_started) / 1e6
+                               if model_version_utc is None else None)
                 self._manifest = dict(FormatVersion=1, ExportSessionId=str(uuid.uuid4()), SourceIdentity=source,
                                       ModelKey=model_key, ModelVersionUtc=version, Options=options, ShardSize=shard_size,
-                                      Shards=[], Complete=False, TotalWall=0, Status='PREPARING')
+                                      Shards=[], Complete=False, TotalWall=0, Status='PREPARING',
+                                      SnapshotPinWallMs=pin_wall_ms)
+                preparation_started = time.perf_counter_ns()
                 self._write_elements(element_ids)
+                self._manifest['SelectionShardingWallMs'] = (time.perf_counter_ns() - preparation_started) / 1e6
             self._validate_manifest_state()
             # Verify local immutable artifacts before consulting the network.
             for shard in self._manifest['Shards']:
@@ -210,6 +218,7 @@ class ParallelExport:
                 self._eligible = 0
             self._prefetch = task_prefetch if task_prefetch is not None else min(128, max(2, 2*self._eligible))
             self._prior_wall = self._manifest.get('TotalWall', 0)
+            self._scheduler_wait_ms = self._manifest.get('SchedulerWaitWallMs', 0.0)
             self._manifest.update(Status='RUNNING', TaskPrefetch=self._prefetch,
                                   DownloadConcurrency=download_workers, EligibleWorkers=self._eligible, ResultPrefetch=self._result_prefetch,
                                   WriterLockScope='host-local-fallback' if self._owner.local_fallback else 'filesystem')
@@ -311,7 +320,9 @@ class ParallelExport:
             self._manifest['FailedShards'] = sum(s['State'] == 'FAILED' for s in shards)
             self._manifest['Complete'] = all(s['State'] in READY for s in shards)
             self._manifest['TotalWall'] = getattr(self, '_prior_wall', 0) + (self._ended or time.monotonic())-self._started
+            self._manifest['SchedulerWaitWallMs'] = self._scheduler_wait_ms
             _atomic_json(self._manifest_path, self._manifest)
+            self._last_save_ns = time.perf_counter_ns()
             self._changed.notify_all()
 
     def _validate(self, path, metadata):
@@ -321,6 +332,7 @@ class ParallelExport:
         return result
 
     def _submit(self, shard):
+        started = time.perf_counter_ns()
         elements = json.loads(self._path(shard['Selection']).read_text(encoding='utf-8'))
         if _digest(elements) != shard['ElementIdentity']:
             raise BimBridgeError('INTEGRITY_ERROR', 'Повреждён набор элементов shard')
@@ -333,7 +345,9 @@ class ParallelExport:
             required_capabilities=sorted(WORKER_CAPABILITIES), preferred_worker_instance_id=None,
             client_request_id=shard['ClientRequestId'], can_retry=True, max_attempts=3)
         with self._lock:
-            shard.update(TaskId=task.id, State='QUEUED'); self._save()
+            shard.update(TaskId=task.id, State='QUEUED')
+            shard['SubmitWallMs'] = shard.get('SubmitWallMs', 0) + (time.perf_counter_ns()-started)/1e6
+            self._save()
 
     @contextmanager
     def _download_client(self):
@@ -354,16 +368,54 @@ class ParallelExport:
             if self._stop.is_set() or self._cancel.is_set():
                 raise BimBridgeError('CLIENT_CANCELLED', 'Download остановлен; partial сохранён')
         path = self._path(shard['Destination'])
-        with self._download_client() as client:
-            task = client.task(shard['TaskId'])
-            task.download(path, overwrite=True, resume=True, progress=progress)  # owned path: atomic rename, including FUSE
+        started = time.perf_counter_ns()
+        transfer = {}
+        try:
+            with self._download_client() as client:
+                task = client.task(shard['TaskId'])
+                task.download(path, overwrite=True, resume=True, progress=progress,
+                              telemetry=transfer)  # owned path: atomic rename, including FUSE
+        except Exception as error:
+            transfer['DownloadWallMs'] = (time.perf_counter_ns()-started)/1e6
+            try: error.download_telemetry = transfer
+            except AttributeError: pass  # An unusual exception must keep its original type and code.
+            raise
+        download_ms = (time.perf_counter_ns()-started)/1e6
+        validation_started = time.perf_counter_ns()
         if not _local_valid(path, shard['Metadata']):
             raise BimBridgeError('INTEGRITY_ERROR', 'Size/SHA-256 shard не совпал')
         self._validate(path, shard['Metadata'])
-        return True
+        return dict(DownloadWallMs=download_ms,
+                    ValidationWallMs=(time.perf_counter_ns()-validation_started)/1e6,
+                    **transfer)
 
     @staticmethod
     def _new_attempt(shard):
+        previous = {key: copy.deepcopy(shard.get(key)) for key in
+                    ('TaskId', 'ClientRequestId', 'WorkerInstanceId', 'State', 'Metadata',
+                     'ProcessingWallMs', 'QueueWaitMs', 'HashVerificationMs', 'ArtifactPublicationMs',
+                    'UploadWallMs', 'UploadRetryCount', 'UploadRetryWaitMs',
+                    'SubmitWallMs', 'MonitoringRpcWallMs',
+                     'ResumeValidationWallMs', 'ChunkTransferWallMs', 'LocalFinalizeWallMs',
+                     'DownloadedBytes', 'ResumedBytes', 'ChunkCalls', 'ManagerServeWallMs',
+                     'DownloadAttempts',
+                     'SpatialPerformance', 'StatusTimes', 'Error', 'DownloadWallMs', 'ValidationWallMs')}
+        for key in ('AssignmentId', 'RemoteAttemptNumber', 'AttemptQueueWaitMs', 'ManagerAttempts',
+                    'TaskAcceptanceWallMs', 'AssignmentWallMs', 'ResultPreparationWallMs'):
+            previous[key] = copy.deepcopy(shard.get(key))
+        if previous['TaskId'] or previous['Error']:
+            shard.setdefault('Attempts', []).append(previous)
+        for key in ('WorkerInstanceId', 'ProcessingWallMs', 'QueueWaitMs', 'HashVerificationMs',
+                    'ArtifactPublicationMs', 'UploadWallMs', 'UploadRetryCount',
+                    'UploadRetryWaitMs',
+                    'SpatialPerformance', 'StatusTimes',
+                    'AssignmentId', 'RemoteAttemptNumber', 'AttemptQueueWaitMs', 'ManagerAttempts',
+                    'TaskAcceptanceWallMs', 'AssignmentWallMs', 'ResultPreparationWallMs',
+                    'SubmitWallMs', 'MonitoringRpcWallMs', 'DownloadWallMs', 'ValidationWallMs',
+                    'ResumeValidationWallMs', 'ChunkTransferWallMs', 'LocalFinalizeWallMs',
+                    'DownloadedBytes', 'ResumedBytes', 'ChunkCalls', 'ManagerServeWallMs',
+                    'DownloadAttempts', 'Error'):
+            shard.pop(key, None)
         shard['RetryCount'] += 1
         shard['AttemptNumber'] = shard.get('AttemptNumber', 0) + 1
         shard.update(TaskId=None, ClientRequestId=str(uuid.uuid4()), State='PENDING', Metadata=None,
@@ -424,80 +476,146 @@ class ParallelExport:
             if (shard.get('Error') or {}).get('RemoteUncertain'):
                 break
 
+    def _collect_downloads(self, futures):
+        for future, shard in list(futures.items()):
+            if not future.done():
+                continue
+            del futures[future]
+            try:
+                timings = future.result()
+                with self._lock:
+                    shard.setdefault('DownloadAttempts', []).append(dict(timings, Success=True))
+                    shard.update(timings)
+                    shard['ReadySequence'] = 1 + max((s.get('ReadySequence', 0) for s in self._manifest['Shards']), default=0)
+                    shard['State'] = 'READY'
+                    shard.pop('_ReplacementBytes', None)
+                    shard.pop('Error', None)
+                    self._save()
+            except Exception as error:
+                with self._lock:
+                    timing = getattr(error, 'download_telemetry', {})
+                    if timing:
+                        shard.setdefault('DownloadAttempts', []).append(dict(timing, Success=False,
+                            ErrorCode=getattr(error, 'code', type(error).__name__)))
+                        shard.update(timing)
+                self._handle_error(shard, error)
+
+    def _monitor_shards(self, shards):
+        for shard in shards:
+            if not shard.get('TaskId') or shard['State'] not in {'SUBMITTED', 'QUEUED', 'RUNNING', 'DELIVERING'}:
+                continue
+            try:
+                rpc_started = time.perf_counter_ns()
+                try:
+                    status = self.client.task(shard['TaskId']).status()
+                finally:
+                    with self._lock:
+                        shard['MonitoringRpcWallMs'] = shard.get('MonitoringRpcWallMs', 0) + (
+                            time.perf_counter_ns() - rpc_started) / 1e6
+                state = str(status.get('State', '')).upper()
+                with self._lock:
+                    changed = shard.get('RemoteState') != state
+                    shard['RemoteState'] = state
+                    owner = (status['WorkerInstanceId'] if 'WorkerInstanceId' in status
+                             else shard.get('WorkerInstanceId'))
+                    changed |= shard.get('WorkerInstanceId') != owner
+                    shard['WorkerInstanceId'] = owner
+                    for field in ('ProcessingWallMs', 'QueueWaitMs', 'HashVerificationMs',
+                                  'ArtifactPublicationMs', 'UploadWallMs', 'UploadRetryCount',
+                                  'UploadRetryWaitMs', 'SpatialPerformance',
+                                  'AssignmentId', 'AttemptQueueWaitMs',
+                                  'TaskAcceptanceWallMs', 'AssignmentWallMs', 'ResultPreparationWallMs'):
+                        if field in status:
+                            changed |= shard.get(field) != status[field]
+                            shard[field] = status[field]
+                    if status.get('AttemptNumber') is not None:
+                        changed |= shard.get('RemoteAttemptNumber') != status['AttemptNumber']
+                        shard['RemoteAttemptNumber'] = status['AttemptNumber']
+                    if status.get('PriorAttempts') is not None:
+                        changed |= shard.get('ManagerAttempts') != status['PriorAttempts']
+                        shard['ManagerAttempts'] = status['PriorAttempts']
+                    times = {key: status[key] for key in
+                             ('CreatedAtUtc', 'AssignedAtUtc', 'StartedAtUtc', 'PreparedAtUtc', 'CompletedAtUtc')
+                             if status.get(key) is not None}
+                    if times:
+                        changed |= shard.get('StatusTimes') != times
+                        shard['StatusTimes'] = times
+                if state == 'COMPLETED':
+                    rpc_started = time.perf_counter_ns()
+                    try:
+                        metadata = self.client.task(shard['TaskId']).metadata()
+                    finally:
+                        with self._lock:
+                            shard['MonitoringRpcWallMs'] += (time.perf_counter_ns() - rpc_started) / 1e6
+                    if str(metadata.get('TaskId', '')).lower() != shard['TaskId']:
+                        raise BimBridgeError('INTEGRITY_ERROR', 'Metadata принадлежит другому TaskId')
+                    with self._lock:
+                        shard.update(State='COMPLETED_REMOTE', Metadata=metadata)
+                    changed = True
+                elif state in {'FAILED', 'CANCELLED', 'CANCELED', 'ABANDONED', 'EXPIRED'}:
+                    error = status.get('TaskError') or {}
+                    raise TaskFailed(error.get('Code', state), error.get('Message', state),
+                                     retryable=bool(error.get('IsRetryable')))
+                else:
+                    with self._lock:
+                        next_state = ('DELIVERING' if state in {'RESULT_PREPARED', 'RESULT_UPLOADING'}
+                                      else 'QUEUED' if state == 'QUEUED' else 'RUNNING')
+                        changed |= shard['State'] != next_state
+                        shard['State'] = next_state
+                # Poll timing can be checkpointed periodically; identity, state,
+                # and newly reported server telemetry are durable immediately.
+                if changed or time.perf_counter_ns() - self._last_save_ns >= 1_000_000_000:
+                    self._save()
+            except Exception as error:
+                self._handle_error(shard, error)
+
+    def _schedule_downloads(self, shards, futures, pool):
+        for shard in shards:
+            if shard['State'] != 'COMPLETED_REMOTE' or len(futures) >= self._download_workers:
+                continue
+            # Reserve full lengths for active downloads, independent of
+            # concurrent atomic .inprogress -> final renames.
+            reserved_shards = [s for s in shards if s['State'] in READY | {'DOWNLOADING'}] + [shard]
+            reserved_names = {s['Destination'] for s in reserved_shards}
+            reserved = sum(s['Metadata']['TotalLength'] + s.get('_ReplacementBytes', 0)
+                           for s in reserved_shards)
+            destination = self._path(shard['Destination'])
+            replacement = destination.stat().st_size if destination.exists() else 0
+            old_bytes = 0
+            for path in self.directory.glob('shard-*'):
+                name = path.name.removesuffix('.inprogress')
+                if name.endswith('.bbsp') and name not in reserved_names:
+                    try:
+                        old_bytes += path.stat().st_size
+                    except FileNotFoundError:
+                        pass
+            if reserved + old_bytes + replacement > self._output_limit:
+                self._handle_error(shard, BimBridgeError('RESOURCE_LIMIT', 'max_output_bytes превышен'))
+                continue
+            with self._lock:
+                shard['_ReplacementBytes'] = replacement
+                shard['State'] = 'DOWNLOADING'
+                self._save()
+                download = copy.deepcopy(shard)
+            futures[pool.submit(self._download, download)] = shard
+
     def _run(self):
         futures = {}
         try:
             with ThreadPoolExecutor(max_workers=self._download_workers, thread_name_prefix='psimpy-download') as pool:
                 while not self._stop.is_set() and not self._cancel.is_set():
-                    for future, shard in list(futures.items()):
-                        if future.done():
-                            del futures[future]
-                            try:
-                                future.result()
-                                with self._lock:
-                                    shard['ReadySequence'] = 1 + max((s.get('ReadySequence', 0) for s in self._manifest['Shards']), default=0)
-                                    shard['State'] = 'READY'; shard.pop('_ReplacementBytes', None); shard.pop('Error', None); self._save()
-                            except Exception as error:
-                                self._handle_error(shard, error)
+                    self._collect_downloads(futures)
                     shards = self._manifest['Shards']
                     self._submitter_tick(shards)
-                    for shard in shards:
-                        if not shard.get('TaskId') or shard['State'] not in {'SUBMITTED', 'QUEUED', 'RUNNING', 'DELIVERING'}:
-                            continue
-                        try:
-                            status = self.client.task(shard['TaskId']).status()
-                            state = str(status.get('State', '')).upper()
-                            with self._lock:
-                                shard['RemoteState'] = state
-                                shard['WorkerInstanceId'] = status.get('WorkerInstanceId') or shard.get('WorkerInstanceId')
-                                if status.get('ProcessingWallMs') is not None:
-                                    shard['ProcessingWallMs'] = status['ProcessingWallMs']
-                            if state == 'COMPLETED':
-                                metadata = self.client.task(shard['TaskId']).metadata()
-                                if str(metadata.get('TaskId', '')).lower() != shard['TaskId']:
-                                    raise BimBridgeError('INTEGRITY_ERROR', 'Metadata принадлежит другому TaskId')
-                                with self._lock:
-                                    shard.update(State='COMPLETED_REMOTE', Metadata=metadata)
-                            elif state in {'FAILED', 'CANCELLED', 'CANCELED', 'ABANDONED', 'EXPIRED'}:
-                                error = status.get('TaskError') or {}
-                                raise TaskFailed(error.get('Code', state), error.get('Message', state),
-                                                     retryable=bool(error.get('IsRetryable')))
-                            else:
-                                with self._lock:
-                                    shard['State'] = 'DELIVERING' if state in {'RESULT_PREPARED', 'RESULT_UPLOADING'} else ('QUEUED' if state == 'QUEUED' else 'RUNNING')
-                            self._save()
-                        except Exception as error:
-                            self._handle_error(shard, error)
-                    for shard in shards:
-                        if shard['State'] == 'COMPLETED_REMOTE' and len(futures) < self._download_workers:
-                            # Reserve full lengths for active downloads, independent
-                            # of concurrent atomic .inprogress -> final renames.
-                            reserved_shards = [s for s in shards if s['State'] in READY | {'DOWNLOADING'}] + [shard]
-                            reserved_names = {s['Destination'] for s in reserved_shards}
-                            reserved = sum(s['Metadata']['TotalLength'] + s.get('_ReplacementBytes', 0)
-                                           for s in reserved_shards)
-                            destination = self._path(shard['Destination'])
-                            replacement = destination.stat().st_size if destination.exists() else 0
-                            old_bytes = 0
-                            for path in self.directory.glob('shard-*'):
-                                name = path.name.removesuffix('.inprogress')
-                                if name.endswith('.bbsp') and name not in reserved_names:
-                                    try:
-                                        old_bytes += path.stat().st_size
-                                    except FileNotFoundError:
-                                        pass
-                            if reserved + old_bytes + replacement > self._output_limit:
-                                self._handle_error(shard, BimBridgeError('RESOURCE_LIMIT', 'max_output_bytes превышен'))
-                                continue
-                            with self._lock:
-                                shard['_ReplacementBytes'] = replacement
-                                shard['State'] = 'DOWNLOADING'; self._save()
-                                download = copy.deepcopy(shard)
-                            futures[pool.submit(self._download, download)] = shard
+                    self._monitor_shards(shards)
+                    self._schedule_downloads(shards, futures, pool)
                     if not futures and (all(s['State'] in READY | {'FAILED'} for s in shards) or
                             (self._has_uncertain_failure(shards) and not any(s['State'] in REMOTE for s in shards))):
                         break
+                    wait_started = time.perf_counter_ns()
                     self._stop.wait(self._interval)
+                    with self._lock:
+                        self._scheduler_wait_ms += (time.perf_counter_ns() - wait_started) / 1e6
         except BaseException as error:
             self._exception = error
         finally:
@@ -528,6 +646,11 @@ class ParallelExport:
     def manifest(self):
         with self._lock:
             return copy.deepcopy(self._manifest)
+
+    def profile(self):
+        """Return a portable snapshot, including completed and failed shards."""
+        from .profile import ExportProfile
+        return ExportProfile(self.manifest)
 
     @property
     def summary(self):

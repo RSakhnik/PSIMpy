@@ -68,10 +68,17 @@ class Farm:
             job=self.jobs[task_id]
             with self.lock:
                 self.assignments[number]+=1
-                job.update(State='RUNNING',WorkerInstanceId=f'worker-{number}')
+                job.update(State='RUNNING',WorkerInstanceId=f'worker-{number}',
+                           AttemptNumber=job.get('AttemptNumber',0)+1,
+                           AssignmentId=str(uuid.uuid4()))
                 self.timeline.append(('sdk-start',task_id,number,time.monotonic()))
                 if self.disappear_once:
-                    self.disappear_once=False;self.requeues+=1;job['State']='QUEUED'
+                    self.disappear_once=False;self.requeues+=1
+                    job.setdefault('PriorAttempts',[]).append(dict(
+                        AttemptNumber=job['AttemptNumber'],AssignmentId=job['AssignmentId'],
+                        WorkerInstanceId=job['WorkerInstanceId'],State='ABANDONED',
+                        QueueWaitMs=0.5,TaskError=dict(Code='LEASE_EXPIRED')))
+                    job.update(State='QUEUED',WorkerInstanceId=None,AssignmentId=None)
                     self.queue.put(task_id);slots.release();return
             delay=self.sdk*(8 if self.slow_first and job['index']==0 else 1)*(3 if number==1 and (self.slow_first or self.slow_worker) else 1)
             if self.stop.wait(delay):slots.release();return
