@@ -6,13 +6,18 @@ import argparse
 from pathlib import Path
 import sys
 
-root=Path(__file__).resolve().parents[2]
-source=root/'PSIM_BIM_Workers_Manager'/'BIM Workerks Manager'/'src'/'Pilot.BimBridge.Contracts'
-destinations=[root/'AdvancedTools-PSIM_ADMIN-'/'AdvancedTools'/'BimBridge',
-              root/'PSIMpy'/'src'/'bim_bridge'/'_pilot_source']
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--check',action='store_true')
+parser.add_argument('--manager', type=Path, help='Manager checkout root')
+parser.add_argument('--worker', type=Path, help='AdvancedTools checkout root')
+parser.add_argument('--python', type=Path, help='PSIMpy checkout root')
 options=parser.parse_args()
+root=Path(__file__).resolve().parents[2]
+manager=options.manager or root/'PSIM_BIM_Workers_Manager'
+worker=options.worker or root/'AdvancedTools-PSIM_ADMIN-'
+python=options.python or root/'PSIMpy'
+source=manager/'BIM Workerks Manager'/'src'/'Pilot.BimBridge.Contracts'
+destinations=[worker/'AdvancedTools'/'BimBridge', python/'src'/'bim_bridge'/'_pilot_source']
 different=[]
 for name in ('Contracts.cs','ArtifactContracts.cs'):
     data=(source/name).read_bytes()
