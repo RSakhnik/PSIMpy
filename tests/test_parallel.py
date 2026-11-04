@@ -8,7 +8,7 @@ import time
 import unittest
 
 from bim_bridge import BimBridgeError, ParallelExport
-from parallel_support import Farm, elements
+from parallel_support import Client, FakeTask, Farm, elements
 from spatial_support import MODEL, V1
 
 
@@ -38,6 +38,116 @@ class ParallelTests(unittest.TestCase):
             self.assertEqual(job['payload']['ModelVersionUtc'],V1)
             self.assertIsNone(job['options']['preferred_worker_instance_id'])
         self.assertEqual(len(list(export.iter_sources(completion_order=False))),9)
+
+    def test_slow_status_does_not_block_other_submissions(self):
+        farm=self.farm(2,sdk=.003,upload=.001)
+        entered=threading.Event();release=threading.Event();original=FakeTask.status
+        def stalled(task):
+            if task.client.farm is farm and farm.jobs[task.id]['index']==0 and not entered.is_set():
+                entered.set();release.wait(3)
+            return original(task)
+        with patch.object(FakeTask,'status',stalled):
+            export=self.start(farm,count=8,task_prefetch=2)
+            try:
+                self.assertTrue(entered.wait(3))
+                deadline=time.monotonic()+2
+                while len(farm.jobs)<=2 and time.monotonic()<deadline:time.sleep(.005)
+                self.assertGreater(len(farm.jobs),2)
+                self.assertFalse(release.is_set())
+            finally:release.set()
+            export.wait(10)
+        self.assertLessEqual(farm.max_outstanding,2)
+
+    def test_slow_metadata_does_not_block_other_submissions(self):
+        farm=self.farm(2,sdk=.002,upload=.001)
+        entered=threading.Event();release=threading.Event();original=FakeTask.metadata
+        def stalled(task):
+            if task.client.farm is farm and farm.jobs[task.id]['index']==0 and not entered.is_set():
+                entered.set();release.wait(3)
+            return original(task)
+        with patch.object(FakeTask,'metadata',stalled):
+            export=self.start(farm,count=8,task_prefetch=2,result_prefetch=3)
+            try:
+                self.assertTrue(entered.wait(3))
+                deadline=time.monotonic()+2
+                while len(farm.jobs)<=2 and time.monotonic()<deadline:time.sleep(.005)
+                self.assertGreater(len(farm.jobs),2)
+            finally:release.set()
+            export.wait(10)
+        self.assertTrue(export.manifest['Complete'])
+
+    def test_failed_submit_duration_and_request_identity_survive_retry(self):
+        farm=self.farm();farm.lost_submit=True
+        export=self.start(farm,count=5).wait(10)
+        events=[e for e in export.profile().data['RpcEvents'] if e['Operation']=='SubmitTask']
+        self.assertTrue(any(not e['Success'] for e in events))
+        self.assertTrue(any(e['Success'] for e in events))
+        self.assertEqual(len(farm.jobs),5)
+        self.assertEqual(len(farm.requests),5)
+        self.assertTrue(all(s['SubmitWallMs']>0 for s in export.manifest['Shards']))
+        self.assertTrue(all(s['ClientRequestId'] in farm.requests for s in export.manifest['Shards']))
+        first=export.manifest['Shards'][0]
+        self.assertAlmostEqual(first['SubmitWallMs'],sum(e['WallMs'] for e in events if e['ShardId']==0),places=3)
+
+    def test_failed_status_and_metadata_keep_separate_rpc_events(self):
+        farm=self.farm();farm.status_failure_once=0
+        failed_metadata=[False];original=FakeTask.metadata
+        def metadata(task):
+            if farm.jobs[task.id]['index']==1 and not failed_metadata[0]:
+                failed_metadata[0]=True
+                raise BimBridgeError('TRANSPORT_ERROR','metadata interrupted',retryable=True)
+            return original(task)
+        with patch.object(FakeTask,'metadata',metadata):
+            export=self.start(farm,count=4).wait(10)
+        events=export.profile().data['RpcEvents']
+        failures=[e for e in events if not e['Success']]
+        self.assertTrue(any(e['Operation']=='GetTaskStatus' for e in failures))
+        self.assertTrue(any(e['Operation']=='GetResultMetadata' for e in failures))
+        self.assertTrue(all(e['WallMs']>=0 and e['ErrorCode']=='TRANSPORT_ERROR' for e in failures))
+        self.assertTrue(export.manifest['Complete'])
+
+    def test_submission_pool_and_unknown_requests_are_bounded(self):
+        farm=self.farm(3,sdk=.003)
+        entered=threading.Event();release=threading.Event();guard=threading.Lock()
+        current=[0];peak=[0];original=Client.submit
+        def stalled(client,*args,**kwargs):
+            with guard:
+                current[0]+=1;peak[0]=max(peak[0],current[0]);entered.set()
+            try:
+                release.wait(2)
+                return original(client,*args,**kwargs)
+            finally:
+                with guard:current[0]-=1
+        with patch.object(Client,'submit',stalled):
+            export=self.start(farm,count=40,task_prefetch=3)
+            try:
+                self.assertTrue(entered.wait(3));time.sleep(.04)
+                self.assertLessEqual(peak[0],3)
+                self.assertLessEqual(len(farm.jobs),3)
+            finally:release.set()
+            export.wait(15)
+        self.assertEqual(len(farm.jobs),40)
+
+    def test_close_drains_rpc_then_resume_reconciles_manifest(self):
+        farm=self.farm(2,sdk=.002)
+        entered=threading.Event();release=threading.Event();original=FakeTask.status
+        def stalled(task):
+            if farm.jobs[task.id]['index']==0 and not entered.is_set():
+                entered.set();release.wait(3)
+            return original(task)
+        with patch.object(FakeTask,'status',stalled):
+            export=self.start(farm,count=8,task_prefetch=2)
+            self.assertTrue(entered.wait(3))
+            closer=threading.Thread(target=export.close)
+            closer.start();time.sleep(.02)
+            self.assertTrue(closer.is_alive())
+            release.set();closer.join(4)
+            self.assertFalse(closer.is_alive())
+        self.assertFalse(any(t.name.startswith(('psimpy-submit','psimpy-monitor'))
+                             for t in threading.enumerate()))
+        resumed=self.start(farm,count=8,element_ids=None).wait(10)
+        self.assertTrue(resumed.manifest['Complete'])
+        self.assertEqual(len(farm.jobs),8)
     def test_two_workers_out_of_order_and_parallel_downloads(self):
         farm=self.farm(2,sdk=.015,upload=.005,download=.01,slow_first=True)
         export=self.start(farm,count=12,task_prefetch=4)
@@ -189,7 +299,9 @@ class ParallelTests(unittest.TestCase):
         client._parallel_fork=fork
         export=ParallelExport(client,MODEL,self.directory.name,element_ids=elements(12),shard_size=1,poll_interval=.003)
         self.exports.append(export);export.wait(10)
-        self.assertGreater(len(created),0);self.assertLessEqual(len(created),2)
+        self.assertGreater(len(export._download_clients),0)
+        self.assertLessEqual(len(export._download_clients),2)
+        self.assertLessEqual(len(created),2+export._submit_workers+export._monitor_workers)
         self.assertEqual(len(closed),len(created))
 
     def test_repeated_source_ids_are_deduplicated_across_shard_boundaries(self):
@@ -221,6 +333,8 @@ class ParallelTests(unittest.TestCase):
         self.assertEqual(len(farm.jobs),9)
         task_id=next(iter(farm.jobs));self.assertEqual(farm.chunk_reads[task_id,0],1)
         self.assertEqual(farm.downloads[task_id],2)
+        self.assertTrue(any(e['Operation']=='ReadResultChunk' and not e['Success']
+                            for e in second.profile().data['RpcEvents']))
     def test_expired_task_code_resubmits_only_affected_shard(self):
         farm=self.farm();farm.expire_status_once=0
         export=self.start(farm).wait(10)
@@ -267,6 +381,7 @@ class ParallelTests(unittest.TestCase):
         self.assertLessEqual(farm.max_outstanding,2)
         self.assertLessEqual(farm.max_pipeline_outstanding,6)
         self.assertEqual(export.summary['MaxInflightShards'],6)
+        self.assertGreater(export.profile().data['SchedulerStallWallMs'].get('RESULT_BACKLOG_FULL',0),0)
     def test_restart_downloads_completed_remote_results_with_zero_online_workers(self):
         farm=self.farm(1,sdk=.005,upload=.005,download=.05)
         first=self.start(farm,count=2,task_prefetch=2)

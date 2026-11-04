@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+from datetime import datetime, timezone
 from time import perf_counter_ns
 
 from ._download import _hash, _state
@@ -72,11 +73,29 @@ def download_chunks(transport, task_id, destination, metadata, *, overwrite=Fals
             stream.seek(count)
             for index in range((count+size-1)//size,chunks):
                 if telemetry is not None: telemetry['ChunkCalls'] += 1
+                rpc_started = perf_counter_ns()
+                start_time = datetime.now(timezone.utc).isoformat()
+                attempts = []
+                transport.telemetry = attempts.append
+                rpc_error = None
                 try:
                     response=transport.rpc('ReadResultChunk',TaskId=task_id,ChunkIndex=index)
-                except BaseException:
+                except BaseException as error:
                     serve_known = False
+                    rpc_error = error
                     raise
+                finally:
+                    transport.telemetry = None
+                    sink = telemetry.get('RpcEventSink') if telemetry is not None else None
+                    if sink:
+                        sink(dict(Operation='ReadResultChunk', TaskId=task_id, ChunkIndex=index,
+                                  StartTime=start_time, EndTime=datetime.now(timezone.utc).isoformat(),
+                                  WallMs=(perf_counter_ns()-rpc_started)/1e6,
+                                  AttemptCount=len(attempts) or 1, RetryCount=max(0,len(attempts)-1),
+                                  RetryWaitMs=sum(a.get('RetryWaitMs',0) for a in attempts),
+                                  Success=rpc_error is None,
+                                  ErrorCode=getattr(rpc_error,'code',type(rpc_error).__name__) if rpc_error else None,
+                                  TransportType=type(transport).__name__, Attempts=attempts))
                 if telemetry is not None:
                     value=response.get('ManagerServeWallMs')
                     if type(value) in (int,float) and math.isfinite(value) and value>=0:

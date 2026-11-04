@@ -65,6 +65,29 @@ WorkerProcessingElementsPerMin использует сумму worker-reported m
 
 Synthetic diagnostic: `PYTHONPATH=src;tests python tests/benchmark_parallel.py --output scaling.json --sdk-seconds 1 --upload-seconds .3 --download-seconds .3`. Это fake SDK regression diagnostic, не обещание production scaling.
 
+### Планировщик RPC и ожидания
+
+Планировщик один управляет состояниями shards и атомарной записью manifest. Отправки и опросы выполняются в двух отдельных пулах, каждый не больше `min(4, task_prefetch)`; скачивания ограничены `download_workers`. В пулах нет очереди на все shards: одновременно создаётся не больше числа потоков futures каждого типа. Один shard не опрашивается повторно, пока его предыдущий status/metadata RPC не завершён. Следующий опрос начинается не раньше `poll_interval` после завершения предыдущего. Завершение future пробуждает планировщик без busy-wait. Поэтому медленный status или metadata RPC не останавливает отправки других shards, если позволяют task/result/total inflight лимиты.
+
+Каждый RPC-поток переиспользует собственный fork клиента и транспорта; каждый downloader также имеет отдельный fork. В PilotTransport блокировка остаётся только внутри одного экземпляра и не сериализует все RPC. Forks закрываются после остановки пулов, когда запросы уже завершились. `close()` и `cancel()` ждут текущих ограниченных транспортными timeout/retry запросов; они не создают новые remote задания после остановки. У некорректного транспорта, который никогда не возвращает управление, верхнего принудительного deadline пока нет.
+
+Перед каждой отправкой durable intent содержит неизменный `ClientRequestId` и состояние `SUBMITTED`. После потерянного ответа восстановление повторяет тот же запрос, включая после рестарта. Уже начатые uncertain submissions занимают `task_prefetch` и общий inflight лимит. При исчерпании retry budget с неопределённым remote результатом новые задания не создаются; уже сохранённые intents согласуются. `cancel()` также согласует неизвестный TaskId прежним ключом перед отменой.
+
+В `ExportProfile.data['RpcEvents']` доступны `Operation`, `ShardId`, `TaskId`, UTC `StartTime`/`EndTime`, монотонное `WallMs`, `AttemptCount`, `RetryCount`, `RetryWaitMs`, `Success`, `ErrorCode`, `TransportType` и `Attempts`. У Pilot attempt дополнительно есть `TransportWaitMs` и `ConnectWallMs`. `NetworkWallMs` Pilot включает подключение и RPC; складывать эти вложенные величины нельзя. HTTP attempt отражает время до получения ответа от `open`; чтение JSON входит в logical `WallMs`. RPC исполнения на сервере и чтение ответа отдельно достоверно не выделяются. Одна логическая операция может содержать несколько попыток и backoff. Потерянный submit не повторяется внутри транспорта: это отдельная логическая отправка с тем же ключом после durable checkpoint. Журнал ограничен 2048 последними событиями плюс 128 ошибок; промежуточные checkpoints сохраняют ошибки и короткий хвост, полный ограниченный журнал публикуется при остановке. Секреты и payload в события не входят.
+
+`SchedulerStallWallMs` показывает время ожидания планировщика по причинам `TASK_PREFETCH_FULL`, `RESULT_BACKLOG_FULL`, `TOTAL_INFLIGHT_FULL`, `SUBMIT_PENDING`, `MONITOR_PENDING`, `DOWNLOAD_PENDING`, `POLL_WAIT`, `NO_ELIGIBLE_WORKERS_AT_START`. Причины могут действовать одновременно: их значения **не суммируются** в общий wall. `NO_ELIGIBLE_WORKERS_AT_START` отражает только исходную проверку workers, не текущую загрузку Pilot. Ограничения backlog могут законно задерживать новые задания, даже при свободном worker. `SchedulerWaitWallMs` сохранён для совместимости. Старый profile/manifest без новых полей показывает `None`, а не ноль.
+
+```python
+profile = export.profile().data
+slow = sorted(profile['RpcEvents'] or [], key=lambda event: event['WallMs'], reverse=True)[:10]
+for event in slow:
+    print(event['Operation'], event['ShardId'], event['WallMs'],
+          event['AttemptCount'], event['RetryWaitMs'], event['ErrorCode'])
+print(profile['SchedulerStallWallMs'])
+```
+
+Локальное сравнение старой и новой реализации: `PYTHONPATH=src;tests python tests/benchmark_scheduler.py --baseline-revision 19a5aca --repeats 3 --output scheduler-benchmark.json`. Результаты трёх повторов сохранены в `docs/scheduler-benchmark.json`. Это in-process fake SDK benchmark. Он не измеряет production Pilot, Colab/Drive FUSE и распределение workers. Частая запись checkpoints на FUSE остаётся возможным ограничением; fsync, SHA-256 и resume не отключены.
+
 ### Профиль конкретной выгрузки
 
 ```python

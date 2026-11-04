@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import urllib.error
 
 from bim_bridge import BimBridge, BimBridgeError
 from bim_bridge._chunk_download import download_chunks
@@ -126,6 +127,18 @@ class ChunkDownloadTests(unittest.TestCase):
 
 
 class PilotAdapterTests(unittest.TestCase):
+    def test_pilot_retry_attempts_record_wait_and_error(self):
+        transport=PilotTransport('pilot/db','user','not-real',adapter='unused.dll',retries=1)
+        transport._process=type('Process',(),{'poll':lambda self:None})()
+        events=[];transport.telemetry=events.append
+        failure=BimBridgeError('PILOT_TRANSPORT_TIMEOUT','delayed',retryable=True)
+        with patch.object(transport,'_exchange',side_effect=[failure,{'State':'READY'}]), \
+             patch.object(transport,'close'), patch('bim_bridge.pilot.time.sleep'):
+            self.assertEqual(transport.rpc('GetTaskStatus',TaskId=TASK)['State'],'READY')
+        self.assertEqual([e['Success'] for e in events],[False,True])
+        self.assertEqual(events[0]['RetryWaitMs'],1000)
+        self.assertEqual(events[0]['ErrorCode'],'PILOT_TRANSPORT_TIMEOUT')
+
     def test_submit_maps_json_payload_to_custom_api_without_http(self):
         transport=PilotTransport('https://pilot/database','user','not-real',adapter='unused.dll')
         client=BimBridge.from_pilot('https://pilot/database','user','not-real',adapter='unused.dll')
@@ -154,6 +167,18 @@ if __name__=='__main__':unittest.main()
 
 
 class TokenHttpChunkCompatibilityTests(unittest.TestCase):
+    def test_http_get_retry_records_failed_attempt_and_backoff(self):
+        from bim_bridge.transport import Transport
+        transport=Transport('https://example.invalid/bim-bridge','test-token',retries=1)
+        events=[];transport.telemetry=events.append
+        result=object()
+        with patch.object(transport._opener,'open',side_effect=[urllib.error.URLError('offline'),result]), \
+             patch('bim_bridge.transport.time.sleep'):
+            self.assertIs(transport.open('GET','/health'),result)
+        self.assertEqual([e['Success'] for e in events],[False,True])
+        self.assertEqual(events[0]['RetryWaitMs'],1000)
+        self.assertEqual(events[0]['ErrorCode'],'TRANSPORT_ERROR')
+
     def test_existing_http_client_resumes_by_protocol_chunks_without_ranges(self):
         from bim_bridge.transport import Transport
         source=ChunkSource(b'0123456789');source.metadata['DownloadProtocol']='token-http-chunks-v2'

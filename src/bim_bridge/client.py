@@ -1,5 +1,6 @@
 """Высокоуровневый клиент и дескриптор задания."""
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 import time
 import uuid
@@ -51,7 +52,29 @@ class Task:
     def metadata(self):
         return self.client._http.json("GET", f"/tasks/{self.id}/result/metadata")
     def download(self, destination, *, overwrite=False, decompress=False, progress=None, resume=True, telemetry=None):
-        return self.client._http.download(f"/tasks/{self.id}/result/content", destination, self.metadata(),
+        sink = telemetry.get('RpcEventSink') if telemetry is not None else None
+        if sink:
+            started = time.perf_counter_ns(); start_time = datetime.now(timezone.utc).isoformat()
+            attempts = []; self.client._http.telemetry = attempts.append
+            error = None
+            try:
+                metadata = self.metadata()
+            except Exception as exc:
+                error = exc
+                raise
+            finally:
+                self.client._http.telemetry = None
+                sink(dict(Operation='GetResultMetadata', TaskId=self.id, StartTime=start_time,
+                          EndTime=datetime.now(timezone.utc).isoformat(),
+                          WallMs=(time.perf_counter_ns()-started)/1e6,
+                          AttemptCount=len(attempts) or 1, RetryCount=max(0,len(attempts)-1),
+                          RetryWaitMs=sum(a.get('RetryWaitMs',0) for a in attempts),
+                          Success=error is None,
+                          ErrorCode=getattr(error,'code',type(error).__name__) if error else None,
+                          TransportType=type(self.client._http).__name__, Attempts=attempts))
+        else:
+            metadata = self.metadata()
+        return self.client._http.download(f"/tasks/{self.id}/result/content", destination, metadata,
                                          overwrite=overwrite, decompress=decompress, progress=progress, resume=resume,
                                          telemetry=telemetry)
 

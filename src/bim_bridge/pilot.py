@@ -85,15 +85,31 @@ class PilotTransport:
         # Submit is never blindly retried. ReadResultChunk is deterministic and
         # safe to repeat after a lost response or a fresh Pilot session.
         attempts=self.retries+1 if method in ('GetHealth','GetWorkers','GetTaskStatus','GetResultMetadata','ReadResultChunk') else 1
+        lock_started=time.perf_counter_ns()
         with self._lock:
+            lock_wait_ms=(time.perf_counter_ns()-lock_started)/1e6
             for attempt in range(attempts):
+                started=time.perf_counter_ns()
+                connect_ms=0
                 try:
                     if self._process is None or self._process.poll() is not None:
                         self._process=subprocess.Popen(self._command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
                                                        stderr=subprocess.DEVNULL,text=True,encoding='utf-8',bufsize=1)
                         self._exchange('Connect',**self._credentials)
-                    return self._exchange(method,**arguments)
+                        connect_ms=(time.perf_counter_ns()-started)/1e6
+                    result=self._exchange(method,**arguments)
+                    recorder=getattr(self,'telemetry',None)
+                    if recorder:recorder(dict(Attempt=attempt+1, TransportWaitMs=lock_wait_ms if attempt==0 else 0,
+                                              ConnectWallMs=connect_ms, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
+                                              RetryWaitMs=0, Success=True, ErrorCode=None))
+                    return result
                 except (OSError,BimBridgeError) as error:
+                    retry=not (isinstance(error,BimBridgeError) and not error.retryable) and attempt+1<attempts
+                    recorder=getattr(self,'telemetry',None)
+                    if recorder:recorder(dict(Attempt=attempt+1, TransportWaitMs=lock_wait_ms if attempt==0 else 0,
+                                              ConnectWallMs=connect_ms, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
+                                              RetryWaitMs=min(2**attempt,5)*1000 if retry else 0,
+                                              Success=False, ErrorCode=getattr(error,'code','PILOT_TRANSPORT_ERROR')))
                     self.close()
                     if isinstance(error,BimBridgeError) and not error.retryable:raise
                     if attempt+1==attempts:

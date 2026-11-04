@@ -59,14 +59,30 @@ class Transport:
             headers["Content-Type"] = "application/json; charset=utf-8"
         attempts = self.retries + 1 if method == "GET" else 1
         for attempt in range(attempts):
+            started = time.perf_counter_ns()
+            error_code = None
             try:
-                return self._opener.open(urllib.request.Request(self.base_url + path, data, headers, method=method), timeout=self.timeout)
+                result = self._opener.open(urllib.request.Request(self.base_url + path, data, headers, method=method), timeout=self.timeout)
+                recorder = getattr(self, 'telemetry', None)
+                if recorder: recorder(dict(Attempt=attempt+1, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
+                                           RetryWaitMs=0, Success=True, ErrorCode=None))
+                return result
             except urllib.error.HTTPError as exc:
                 with exc:
                     error = self._error(exc, exc.code)
+                error_code = error.code
+                retry = exc.code in (429, 502, 503, 504) and attempt + 1 < attempts
+                recorder = getattr(self, 'telemetry', None)
+                if recorder: recorder(dict(Attempt=attempt+1, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
+                                           RetryWaitMs=min(2 ** attempt, 5)*1000 if retry else 0,
+                                           Success=False, ErrorCode=error_code))
                 if exc.code not in (429, 502, 503, 504) or attempt + 1 == attempts:
                     raise error from None
             except (urllib.error.URLError, TimeoutError, OSError):
+                recorder = getattr(self, 'telemetry', None)
+                if recorder: recorder(dict(Attempt=attempt+1, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
+                                           RetryWaitMs=min(2 ** attempt, 5)*1000 if attempt+1<attempts else 0,
+                                           Success=False, ErrorCode='TRANSPORT_ERROR'))
                 if attempt + 1 == attempts:
                     raise BimBridgeError("TRANSPORT_ERROR", "Соединение с BIM Bridge не выполнено", retryable=True) from None
             time.sleep(min(2 ** attempt, 5))

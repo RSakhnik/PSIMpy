@@ -11,6 +11,11 @@ from bim_bridge._diagnostics import spatial_performance
 
 
 class ProfileTests(unittest.TestCase):
+    def test_old_manifest_has_unknown_scheduler_telemetry(self):
+        data=ExportProfile(dict(Shards=[],TotalWall=1,Complete=True)).data
+        self.assertIsNone(data['RpcEvents'])
+        self.assertIsNone(data['SchedulerStallWallMs'])
+
     def test_opaque_spatial_diagnostics_and_legacy_fallback(self):
         worker = dict(SchemaVersion=1, TaskId='task', AssignmentId='assignment',
                       SourceElements=5, TraversedNodes=8, Instances=3, UniqueMeshes=1,

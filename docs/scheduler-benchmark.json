@@ -1,0 +1,266 @@
+[
+  {
+    "Scenario": "healthy",
+    "Implementation": "baseline",
+    "Runs": [
+      {
+        "WallSeconds": 1.505,
+        "ThroughputPerSecond": 15.94,
+        "MaxSubmitGapSeconds": 0.189,
+        "SubmittedDuringDelay": null,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 2,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 438.4,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2387477
+      },
+      {
+        "WallSeconds": 1.531,
+        "ThroughputPerSecond": 15.67,
+        "MaxSubmitGapSeconds": 0.202,
+        "SubmittedDuringDelay": null,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 2,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 450.5,
+        "RetryCount": 0,
+        "PeakTracedBytes": 3277639
+      },
+      {
+        "WallSeconds": 1.509,
+        "ThroughputPerSecond": 15.91,
+        "MaxSubmitGapSeconds": 0.187,
+        "SubmittedDuringDelay": null,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 2,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 428.8,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2326383
+      }
+    ],
+    "MedianWallSeconds": 1.509,
+    "MedianSubmitGapSeconds": 0.189
+  },
+  {
+    "Scenario": "healthy",
+    "Implementation": "current",
+    "Runs": [
+      {
+        "WallSeconds": 1.514,
+        "ThroughputPerSecond": 15.85,
+        "MaxSubmitGapSeconds": 0.198,
+        "SubmittedDuringDelay": null,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 2,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 344.1,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2496671
+      },
+      {
+        "WallSeconds": 2.014,
+        "ThroughputPerSecond": 11.92,
+        "MaxSubmitGapSeconds": 0.297,
+        "SubmittedDuringDelay": null,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 2,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 368.3,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2452438
+      },
+      {
+        "WallSeconds": 1.576,
+        "ThroughputPerSecond": 15.23,
+        "MaxSubmitGapSeconds": 0.221,
+        "SubmittedDuringDelay": null,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 2,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 352.7,
+        "RetryCount": 0,
+        "PeakTracedBytes": 1593204
+      }
+    ],
+    "MedianWallSeconds": 1.576,
+    "MedianSubmitGapSeconds": 0.221
+  },
+  {
+    "Scenario": "delayed-status",
+    "Implementation": "baseline",
+    "Runs": [
+      {
+        "WallSeconds": 2.556,
+        "ThroughputPerSecond": 9.39,
+        "MaxSubmitGapSeconds": 0.653,
+        "SubmittedDuringDelay": 0,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 2,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 810.6,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2373317
+      },
+      {
+        "WallSeconds": 2.276,
+        "ThroughputPerSecond": 10.54,
+        "MaxSubmitGapSeconds": 0.641,
+        "SubmittedDuringDelay": 0,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 2,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 608.8,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2379142
+      },
+      {
+        "WallSeconds": 2.087,
+        "ThroughputPerSecond": 11.5,
+        "MaxSubmitGapSeconds": 0.658,
+        "SubmittedDuringDelay": 0,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 2,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 424.1,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2338395
+      }
+    ],
+    "MedianWallSeconds": 2.276,
+    "MedianSubmitGapSeconds": 0.653
+  },
+  {
+    "Scenario": "delayed-status",
+    "Implementation": "current",
+    "Runs": [
+      {
+        "WallSeconds": 1.872,
+        "ThroughputPerSecond": 12.82,
+        "MaxSubmitGapSeconds": 0.217,
+        "SubmittedDuringDelay": 11,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 3,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 373.6,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2491024
+      },
+      {
+        "WallSeconds": 1.599,
+        "ThroughputPerSecond": 15.01,
+        "MaxSubmitGapSeconds": 0.196,
+        "SubmittedDuringDelay": 11,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 3,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 349.3,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2465556
+      },
+      {
+        "WallSeconds": 1.868,
+        "ThroughputPerSecond": 12.85,
+        "MaxSubmitGapSeconds": 0.415,
+        "SubmittedDuringDelay": 6,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 2,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 331.3,
+        "RetryCount": 0,
+        "PeakTracedBytes": 1568483
+      }
+    ],
+    "MedianWallSeconds": 1.868,
+    "MedianSubmitGapSeconds": 0.217
+  },
+  {
+    "Scenario": "slow-download",
+    "Implementation": "baseline",
+    "Runs": [
+      {
+        "WallSeconds": 1.821,
+        "ThroughputPerSecond": 13.18,
+        "MaxSubmitGapSeconds": 0.219,
+        "SubmittedDuringDelay": null,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 3,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 604.9,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2367284
+      },
+      {
+        "WallSeconds": 1.747,
+        "ThroughputPerSecond": 13.74,
+        "MaxSubmitGapSeconds": 0.234,
+        "SubmittedDuringDelay": null,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 3,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 694.8,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2402265
+      },
+      {
+        "WallSeconds": 1.716,
+        "ThroughputPerSecond": 13.99,
+        "MaxSubmitGapSeconds": 0.234,
+        "SubmittedDuringDelay": null,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 3,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 632.4,
+        "RetryCount": 0,
+        "PeakTracedBytes": 1389748
+      }
+    ],
+    "MedianWallSeconds": 1.747,
+    "MedianSubmitGapSeconds": 0.234
+  },
+  {
+    "Scenario": "slow-download",
+    "Implementation": "current",
+    "Runs": [
+      {
+        "WallSeconds": 2.087,
+        "ThroughputPerSecond": 11.5,
+        "MaxSubmitGapSeconds": 0.666,
+        "SubmittedDuringDelay": null,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 2,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 886.6,
+        "RetryCount": 0,
+        "PeakTracedBytes": 1533308
+      },
+      {
+        "WallSeconds": 1.732,
+        "ThroughputPerSecond": 13.86,
+        "MaxSubmitGapSeconds": 0.22,
+        "SubmittedDuringDelay": null,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 3,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 535.2,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2580523
+      },
+      {
+        "WallSeconds": 1.725,
+        "ThroughputPerSecond": 13.91,
+        "MaxSubmitGapSeconds": 0.232,
+        "SubmittedDuringDelay": null,
+        "Submitted": 24,
+        "MaxConcurrentRpc": 2,
+        "MaxConcurrentDownloads": 2,
+        "SchedulerWaitMs": 543.5,
+        "RetryCount": 0,
+        "PeakTracedBytes": 2375828
+      }
+    ],
+    "MedianWallSeconds": 1.732,
+    "MedianSubmitGapSeconds": 0.232
+  }
+]

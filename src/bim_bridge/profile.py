@@ -217,7 +217,9 @@ class ExportProfile:
                                             if artifact_bytes is not None and total_wall_ms else None),
                     ShardProcessingDuration=shard_duration,
                     Shards=shards, Attempts=attempts, DownloadAttempts=downloads,
-                    Stages=stages, Workers=list(workers.values()))
+                    Stages=stages, Workers=list(workers.values()),
+                    RpcEvents=manifest.get('RpcEvents'),
+                    SchedulerStallWallMs=manifest.get('SchedulerStallWallMs'))
 
     def save_json(self, path):
         Path(path).write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding='utf-8')
