@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -28,6 +29,15 @@ class ProtocolRoundTripTests(unittest.TestCase):
                     self.assertEqual((Path(directory)/'extraction-count').read_text(),'1')
                     if operation=='elements':self.assertEqual(len(list(artifact.iter_elements())),200)
                     else:self.assertEqual(artifact.spatial().validate()['Summary']['MeshCount'],1)
+                    if operation=='spatial':
+                        profile=artifact.profile()
+                        self.assertEqual(profile.data['Attempts'][0]['ProcessedSources'],1)
+                        profile.save_json(Path(directory)/'profile.json')
+                        profile.save_csv(Path(directory)/'stages.csv')
+                        profile.save_html(Path(directory)/'timeline.html')
+                        self.assertEqual(json.loads((Path(directory)/'profile.json').read_text())['ProcessedSources'],1)
+                        self.assertIn('sdk-traversal',(Path(directory)/'stages.csv').read_text(encoding='utf-8-sig'))
+                        self.assertIn('BIM Bridge performance profile',(Path(directory)/'timeline.html').read_text())
                     self.assertFalse(path.with_name(path.name+'.inprogress').exists())
                 finally:
                     client.close()

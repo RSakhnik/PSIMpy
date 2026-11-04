@@ -6,6 +6,7 @@ import json
 import hashlib
 from pathlib import Path
 from statistics import median
+from ._diagnostics import spatial_performance
 
 
 _WORKER_STAGES = (
@@ -50,7 +51,7 @@ def _attempt_records(shard):
                        UploadRetryCount=remote.get('UploadRetryCount'),
                        UploadRetryWaitMs=remote.get('UploadRetryWaitMs'),
                        ProcessingWallMs=remote.get('ProcessingWallMs'),
-                       SpatialPerformance=remote.get('SpatialPerformance'),
+                       SpatialPerformance=spatial_performance(remote),
                        Error=remote.get('TaskError'), StatusTimes=times)
         yield local
 
@@ -78,7 +79,7 @@ class ExportProfile:
                 identity['DownloadAttemptNumber'] = None
                 identity['ElementCount'] = shard.get('ElementCount')
                 identity['ArtifactBytes'] = (record.get('Metadata') or {}).get('TotalLength')
-                worker = record.get('SpatialPerformance')
+                worker = spatial_performance(record)
                 identity['ProcessedSources'] = worker.get('SourceElements') if worker else None
                 for field in ('ProcessingWallMs', 'QueueWaitMs', 'TaskAcceptanceWallMs',
                               'AssignmentWallMs', 'ResultPreparationWallMs', 'HashVerificationMs',

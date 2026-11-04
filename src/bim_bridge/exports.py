@@ -175,7 +175,7 @@ def export_artifact(client,operation,payload,destination,*,timeout=None,on_statu
             UploadWallMs=status.get('UploadWallMs'),
             UploadRetryCount=status.get('UploadRetryCount'),
             UploadRetryWaitMs=status.get('UploadRetryWaitMs'),
-            SpatialPerformance=status.get('SpatialPerformance'),DownloadWallMs=download_ms,
+            SpatialPerformance=status.get('SpatialPerformance'),Diagnostics=status.get('Diagnostics'),DownloadWallMs=download_ms,
             **transfer,
             StatusTimes={key:status[key] for key in ('CreatedAtUtc','AssignedAtUtc','StartedAtUtc','PreparedAtUtc','CompletedAtUtc')
                          if status.get(key) is not None},Metadata=metadata)])

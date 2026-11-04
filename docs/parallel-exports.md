@@ -85,6 +85,12 @@ HTML открывается локально. `profile.compare(previous)` и `sa
 eligible workers. В JSON сохраняются прежние remote attempts и отдельные download attempts.
 CSV содержит `AttemptNumber` и `DownloadAttemptNumber`; повторная передача не затирает
 предыдущие строки. Отсутствующее измерение показывается как `null`/пустое поле/«—», а не 0.
+Текущий worker передаёт профиль в небольшом `DiagnosticEnvelopeDto` с SHA-256;
+Manager сохраняет и возвращает bytes без анализа SDK полей. PSIMpy проверяет
+размер, hash, content type, версию схемы, идентификаторы и значения известной
+spatial схемы. Для старого worker остаётся типизированное legacy поле.
+Неизвестная или повреждённая диагностика отображается как недоступная и не
+мешает открытию корректного spatial artifact.
 Если Manager повторно назначил один TaskId, прежние назначения отображаются отдельными
 attempts с AssignmentId, worker и причиной сбоя. `AttemptQueueWaitMs` относится к одному
 назначению; прежнее `QueueWaitMs` в task status сохраняет накопительное значение для

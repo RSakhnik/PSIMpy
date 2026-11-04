@@ -399,7 +399,7 @@ class ParallelExport:
                      'ResumeValidationWallMs', 'ChunkTransferWallMs', 'LocalFinalizeWallMs',
                      'DownloadedBytes', 'ResumedBytes', 'ChunkCalls', 'ManagerServeWallMs',
                      'DownloadAttempts',
-                     'SpatialPerformance', 'StatusTimes', 'Error', 'DownloadWallMs', 'ValidationWallMs')}
+                     'SpatialPerformance', 'Diagnostics', 'StatusTimes', 'Error', 'DownloadWallMs', 'ValidationWallMs')}
         for key in ('AssignmentId', 'RemoteAttemptNumber', 'AttemptQueueWaitMs', 'ManagerAttempts',
                     'TaskAcceptanceWallMs', 'AssignmentWallMs', 'ResultPreparationWallMs'):
             previous[key] = copy.deepcopy(shard.get(key))
@@ -408,7 +408,7 @@ class ParallelExport:
         for key in ('WorkerInstanceId', 'ProcessingWallMs', 'QueueWaitMs', 'HashVerificationMs',
                     'ArtifactPublicationMs', 'UploadWallMs', 'UploadRetryCount',
                     'UploadRetryWaitMs',
-                    'SpatialPerformance', 'StatusTimes',
+                    'SpatialPerformance', 'Diagnostics', 'StatusTimes',
                     'AssignmentId', 'RemoteAttemptNumber', 'AttemptQueueWaitMs', 'ManagerAttempts',
                     'TaskAcceptanceWallMs', 'AssignmentWallMs', 'ResultPreparationWallMs',
                     'SubmitWallMs', 'MonitoringRpcWallMs', 'DownloadWallMs', 'ValidationWallMs',
@@ -522,7 +522,7 @@ class ParallelExport:
                     shard['WorkerInstanceId'] = owner
                     for field in ('ProcessingWallMs', 'QueueWaitMs', 'HashVerificationMs',
                                   'ArtifactPublicationMs', 'UploadWallMs', 'UploadRetryCount',
-                                  'UploadRetryWaitMs', 'SpatialPerformance',
+                                  'UploadRetryWaitMs', 'SpatialPerformance', 'Diagnostics',
                                   'AssignmentId', 'AttemptQueueWaitMs',
                                   'TaskAcceptanceWallMs', 'AssignmentWallMs', 'ResultPreparationWallMs'):
                         if field in status:

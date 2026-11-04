@@ -1,13 +1,41 @@
 import csv
+import base64
+import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
 from bim_bridge.profile import ExportProfile
+from bim_bridge._diagnostics import spatial_performance
 
 
 class ProfileTests(unittest.TestCase):
+    def test_opaque_spatial_diagnostics_and_legacy_fallback(self):
+        worker = dict(SchemaVersion=1, TaskId='task', AssignmentId='assignment',
+                      SourceElements=5, TraversedNodes=8, Instances=3, UniqueMeshes=1,
+                      SdkTraversalReadMs=1.0, SdkMeshAcquireMs=2.0,
+                      SdkVerticesReadMs=3.0, BoundsCpuMs=4.0)
+        raw = json.dumps(worker).encode()
+        envelope = dict(ContentType='application/vnd.pilot.bimbridge.spatial-performance+json',
+                        SchemaVersion=1, PayloadBytes=base64.b64encode(raw).decode(),
+                        Sha256=hashlib.sha256(raw).hexdigest())
+        record = dict(TaskId='task', AssignmentId='assignment', Diagnostics=envelope,
+                      SpatialPerformance=dict(SourceElements=99))
+        self.assertEqual(spatial_performance(record)['SourceElements'], 5)
+        profile = ExportProfile(dict(Shards=[dict(ShardId=0, State='READY', **record)])).data
+        self.assertEqual(profile['Attempts'][0]['ProcessedSources'], 5)
+        bad = dict(envelope, Sha256='0' * 64)
+        self.assertEqual(spatial_performance(dict(record, Diagnostics=bad))['SourceElements'], 99)
+        self.assertIsNone(spatial_performance(dict(Diagnostics=bad)))
+        for broken in (dict(envelope, SchemaVersion=999),
+                       dict(envelope, PayloadBytes=base64.b64encode(b'{').decode(),
+                            Sha256=hashlib.sha256(b'{').hexdigest()),
+                       dict(envelope, PayloadBytes=base64.b64encode(b' ' * (64 * 1024 + 1)).decode()),
+                       dict(envelope, ContentType='application/vnd.other+json')):
+            self.assertIsNone(spatial_performance(dict(Diagnostics=broken)))
+        self.assertIsNone(spatial_performance({}))
+
     def test_system_kpis_and_scaling_need_complete_measured_runs(self):
         def run(workers, wall):
             return ExportProfile(dict(ModelKey='m', ModelVersionUtc='v', Options={'Meshes': True},
