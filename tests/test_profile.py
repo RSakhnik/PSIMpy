@@ -13,11 +13,13 @@ class ProfileTests(unittest.TestCase):
             return ExportProfile(dict(ModelKey='m', ModelVersionUtc='v', Options={'Meshes': True},
                 ShardSize=10, EligibleWorkers=workers, TotalWall=wall, Complete=True,
                 Shards=[dict(ShardId=i, State='READY', ElementIdentity=[i],
+                             WorkerInstanceId=f'worker-{i % workers}',
                              ProcessingWallMs=duration, SpatialPerformance=dict(SourceElements=10),
                              Metadata={'TotalLength': 100})
                         for i, duration in enumerate((10, 20, 30, 40, 50))]))
         prior, current = run(1, 10), run(2, 6)
         self.assertEqual(current.data['ProcessedSources'], 50)
+        self.assertEqual(current.data['ActiveWorkers'], 2)
         self.assertEqual(current.data['EndToEndSourcesPerMinute'], 500)
         self.assertAlmostEqual(current.data['ArtifactBytesPerSecond'], 500 / 6)
         self.assertEqual(current.data['ShardProcessingDuration'],
@@ -36,6 +38,9 @@ class ProfileTests(unittest.TestCase):
         self.assertIsNone(incomplete.data['ProcessedSources'])
         self.assertIsNone(incomplete.data['ArtifactBytes'])
         self.assertIsNone(incomplete.data['EndToEndSourcesPerMinute'])
+        unknown_identity = run(2, 6)
+        unknown_identity.data['SelectionIdentity'] = None
+        self.assertFalse(unknown_identity.compare(prior)['ScalingComparable'])
 
     def test_worker_rate_uses_reported_sources_and_marks_incomplete_attempts_unknown(self):
         shards = [dict(ShardId=number, State='READY', WorkerInstanceId='worker',

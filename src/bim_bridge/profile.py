@@ -154,6 +154,8 @@ class ExportProfile:
                                Stage=name, WallMs=value, ActiveMs=None,
                                Source='client-monotonic' if value is not None else 'unavailable'))
         ready = [shard for shard in shards if shard['State'] in ('READY', 'CONSUMED')]
+        active_workers = (len({shard['WorkerInstanceId'] for shard in ready})
+                          if ready and all(shard['WorkerInstanceId'] for shard in ready) else None)
         workers = {}
         for shard in attempts:
             owner = shard['WorkerInstanceId']
@@ -205,6 +207,7 @@ class ExportProfile:
                     EligibleWorkers=manifest.get('EligibleWorkers'),
                     TotalWallMs=total_wall_ms,
                     Complete=manifest.get('Complete'), CompletedShards=len(ready),
+                    ActiveWorkers=active_workers,
                     TotalShards=len(shards), ArtifactBytes=artifact_bytes,
                     ProcessedSources=processed_sources,
                     EndToEndSourcesPerMinute=(processed_sources * 60000 / total_wall_ms
@@ -234,7 +237,8 @@ class ExportProfile:
         warnings = [field for field in fields if self.data.get(field) != previous.get(field)]
         current = self.data['TotalWallMs']; prior = previous.get('TotalWallMs')
         scaling_fields = tuple(field for field in fields if field != 'EligibleWorkers')
-        scaling_comparable = (all(self.data.get(field) == previous.get(field) for field in scaling_fields)
+        scaling_comparable = (all(self.data.get(field) is not None and
+                                  self.data.get(field) == previous.get(field) for field in scaling_fields)
                               and self.data.get('Complete') is True and previous.get('Complete') is True
                               and isinstance(self.data.get('EligibleWorkers'), int)
                               and isinstance(previous.get('EligibleWorkers'), int)
@@ -346,7 +350,8 @@ class ExportProfile:
                 '.unknown{background:repeating-linear-gradient(45deg,#b7bfc8,#b7bfc8 4px,#e2e5e9 4px,#e2e5e9 8px)}</style>'
                 '<h1>BIM Bridge performance profile</h1><p>Session: '+cell(data['ExportSessionId'])+'</p>'
                 '<div class="kpi"><div>Wall: '+cell(data['TotalWallMs'])+' ms</div><div>Shards: '
-                +cell(data['CompletedShards'])+'/'+cell(data['TotalShards'])+'</div><div>Bytes: '
+                +cell(data['CompletedShards'])+'/'+cell(data['TotalShards'])+'</div><div>Active workers: '
+                +cell(data['ActiveWorkers'])+'</div><div>Bytes: '
                 +cell(data['ArtifactBytes'])+'</div><div>Sources/min: '
                 +cell(data['EndToEndSourcesPerMinute'])+'</div><div>Artifact bytes/s: '
                 +cell(data['ArtifactBytesPerSecond'])+'</div></div>'

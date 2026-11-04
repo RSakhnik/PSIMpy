@@ -128,6 +128,9 @@ SDK traversal, mesh read, bounds и binary encoding измеряются в work
 `compare()` вычисляет `Speedup` и `ScalingEfficiency` только для завершённых
 прогонов с одинаковыми моделью, версией, выборкой, geometry options и размером
 shard. Формула efficiency: `Speedup / (workers_current / workers_previous)`.
+В формуле используется число eligible workers, записанное при старте каждого
+экспорта; фактически задействованные workers отдельно показаны как `ActiveWorkers`.
+Если identity или число workers неизвестно, оценка масштабирования отсутствует.
 Разное число workers остаётся предупреждением в обычном сравнении wall time.
 Manager сообщает queue wait, SHA verification, artifact publication и время чтения
 каждого result chunk. Worker upload включает retry и ожидания RPC. `UploadRetryCount`
