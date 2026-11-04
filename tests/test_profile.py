@@ -8,6 +8,35 @@ from bim_bridge.profile import ExportProfile
 
 
 class ProfileTests(unittest.TestCase):
+    def test_system_kpis_and_scaling_need_complete_measured_runs(self):
+        def run(workers, wall):
+            return ExportProfile(dict(ModelKey='m', ModelVersionUtc='v', Options={'Meshes': True},
+                ShardSize=10, EligibleWorkers=workers, TotalWall=wall, Complete=True,
+                Shards=[dict(ShardId=i, State='READY', ElementIdentity=[i],
+                             ProcessingWallMs=duration, SpatialPerformance=dict(SourceElements=10),
+                             Metadata={'TotalLength': 100})
+                        for i, duration in enumerate((10, 20, 30, 40, 50))]))
+        prior, current = run(1, 10), run(2, 6)
+        self.assertEqual(current.data['ProcessedSources'], 50)
+        self.assertEqual(current.data['EndToEndSourcesPerMinute'], 500)
+        self.assertAlmostEqual(current.data['ArtifactBytesPerSecond'], 500 / 6)
+        self.assertEqual(current.data['ShardProcessingDuration'],
+                         dict(Known=5, Total=5, MinMs=10, MedianMs=30, P95Ms=50, MaxMs=50))
+        comparison = current.compare(prior)
+        self.assertFalse(comparison['Comparable'])
+        self.assertTrue(comparison['ScalingComparable'])
+        self.assertAlmostEqual(comparison['Speedup'], 10 / 6)
+        self.assertAlmostEqual(comparison['ScalingEfficiency'], 5 / 6)
+        missing = run(2, 6)
+        missing.data['Complete'] = False
+        self.assertFalse(current.compare(missing)['ScalingComparable'])
+        incomplete = ExportProfile(dict(Complete=True, TotalWall=6, Shards=[
+            dict(ShardId=0, State='READY', SpatialPerformance=dict(SourceElements=3)),
+            dict(ShardId=1, State='FAILED', Metadata={'TotalLength': 4})]))
+        self.assertIsNone(incomplete.data['ProcessedSources'])
+        self.assertIsNone(incomplete.data['ArtifactBytes'])
+        self.assertIsNone(incomplete.data['EndToEndSourcesPerMinute'])
+
     def test_worker_rate_uses_reported_sources_and_marks_incomplete_attempts_unknown(self):
         shards = [dict(ShardId=number, State='READY', WorkerInstanceId='worker',
                        ElementCount=planned, ProcessingWallMs=1000,

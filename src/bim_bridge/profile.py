@@ -5,6 +5,7 @@ from html import escape
 import json
 import hashlib
 from pathlib import Path
+from statistics import median
 
 
 _WORKER_STAGES = (
@@ -180,15 +181,37 @@ class ExportProfile:
             total_wall = manifest.get('TotalWall')
             row['ProcessingUtilization'] = (row['ProcessingWallMs'] / (total_wall * 1000)
                                             if row['ProcessingWallMs'] is not None and total_wall else None)
+        total_wall_ms = manifest['TotalWall'] * 1000 if manifest.get('TotalWall') is not None else None
+        complete = manifest.get('Complete') is True and len(ready) == len(shards)
+        ready_sources = [shard['ProcessedSources'] for shard in ready]
+        processed_sources = (sum(ready_sources) if complete and ready_sources
+                             and all(value is not None for value in ready_sources) else None)
+        artifact_lengths = [shard['ArtifactBytes'] for shard in ready]
+        artifact_bytes = (sum(artifact_lengths) if complete and artifact_lengths
+                          and all(value is not None for value in artifact_lengths) else None)
+        processing_times = sorted(shard['ProcessingWallMs'] for shard in ready
+                                  if shard['ProcessingWallMs'] is not None)
+        shard_duration = dict(Known=len(processing_times), Total=len(shards),
+                              MinMs=processing_times[0] if processing_times else None,
+                              MedianMs=median(processing_times) if processing_times else None,
+                              P95Ms=processing_times[(19 * len(processing_times) + 19) // 20 - 1]
+                              if processing_times else None,
+                              MaxMs=processing_times[-1] if processing_times else None)
         return dict(SchemaVersion=1, ExportSessionId=manifest.get('ExportSessionId'),
                     ModelKey=manifest.get('ModelKey'), ModelVersionUtc=manifest.get('ModelVersionUtc'),
                     Options=manifest.get('Options'), ShardSize=manifest.get('ShardSize'),
                     SelectionIdentity=hashlib.sha256(json.dumps([s.get('ElementIdentity') for s in manifest.get('Shards', [])],
                         sort_keys=True).encode()).hexdigest() if manifest.get('Shards') else None,
                     EligibleWorkers=manifest.get('EligibleWorkers'),
-                    TotalWallMs=manifest['TotalWall']*1000 if manifest.get('TotalWall') is not None else None,
+                    TotalWallMs=total_wall_ms,
                     Complete=manifest.get('Complete'), CompletedShards=len(ready),
-                    TotalShards=len(shards), ArtifactBytes=sum(s['ArtifactBytes'] or 0 for s in ready),
+                    TotalShards=len(shards), ArtifactBytes=artifact_bytes,
+                    ProcessedSources=processed_sources,
+                    EndToEndSourcesPerMinute=(processed_sources * 60000 / total_wall_ms
+                                              if processed_sources is not None and total_wall_ms else None),
+                    ArtifactBytesPerSecond=(artifact_bytes * 1000 / total_wall_ms
+                                            if artifact_bytes is not None and total_wall_ms else None),
+                    ShardProcessingDuration=shard_duration,
                     Shards=shards, Attempts=attempts, DownloadAttempts=downloads,
                     Stages=stages, Workers=list(workers.values()))
 
@@ -210,8 +233,19 @@ class ExportProfile:
         fields = ('ModelKey', 'ModelVersionUtc', 'Options', 'SelectionIdentity', 'ShardSize', 'EligibleWorkers')
         warnings = [field for field in fields if self.data.get(field) != previous.get(field)]
         current = self.data['TotalWallMs']; prior = previous.get('TotalWallMs')
+        scaling_fields = tuple(field for field in fields if field != 'EligibleWorkers')
+        scaling_comparable = (all(self.data.get(field) == previous.get(field) for field in scaling_fields)
+                              and self.data.get('Complete') is True and previous.get('Complete') is True
+                              and isinstance(self.data.get('EligibleWorkers'), int)
+                              and isinstance(previous.get('EligibleWorkers'), int)
+                              and self.data['EligibleWorkers'] > 0 and previous['EligibleWorkers'] > 0
+                              and current is not None and prior is not None and current > 0)
+        speedup = prior / current if scaling_comparable else None
+        efficiency = (speedup * previous['EligibleWorkers'] / self.data['EligibleWorkers']
+                      if scaling_comparable else None)
         return dict(Comparable=not warnings, Differences=warnings, CurrentWallMs=current,
-                    PreviousWallMs=prior, WallChangeMs=current-prior if current is not None and prior is not None else None)
+                    PreviousWallMs=prior, WallChangeMs=current-prior if current is not None and prior is not None else None,
+                    ScalingComparable=scaling_comparable, Speedup=speedup, ScalingEfficiency=efficiency)
 
     def _timeline_html(self):
         def instant(value):
@@ -292,7 +326,10 @@ class ExportProfile:
             warning = ('<p class="warning">Запуски нельзя считать сопоставимыми: '+
                        ', '.join(cell(field) for field in differences)+'.</p>') if differences else ''
             comparison = ('<section><h2>Сравнение запусков</h2>'+warning+
-                          table(('CurrentWallMs','PreviousWallMs','WallChangeMs'), [result])+'</section>')
+                          table(('CurrentWallMs','PreviousWallMs','WallChangeMs','Speedup','ScalingEfficiency'), [result])+
+                          '<p>Масштабирование оценивается только для завершённых запусков с одинаковыми '
+                          'моделью, выборкой, настройками и размером шарда. Число workers может различаться; '
+                          'efficiency = speedup / отношение числа workers.</p></section>')
         errors = [dict(ShardId=a['ShardId'], AttemptNumber=a['AttemptNumber'],
                        Error=a['Error']) for a in data['Attempts'] if a['Error']]
         html = ('<!doctype html><html lang="ru"><meta charset="utf-8">'
@@ -310,7 +347,9 @@ class ExportProfile:
                 '<h1>BIM Bridge performance profile</h1><p>Session: '+cell(data['ExportSessionId'])+'</p>'
                 '<div class="kpi"><div>Wall: '+cell(data['TotalWallMs'])+' ms</div><div>Shards: '
                 +cell(data['CompletedShards'])+'/'+cell(data['TotalShards'])+'</div><div>Bytes: '
-                +cell(data['ArtifactBytes'])+'</div></div>'
+                +cell(data['ArtifactBytes'])+'</div><div>Sources/min: '
+                +cell(data['EndToEndSourcesPerMinute'])+'</div><div>Artifact bytes/s: '
+                +cell(data['ArtifactBytesPerSecond'])+'</div></div>'
                 '<p>Отсутствующие измерения обозначены «—». UTC отметки разных машин показывают порядок событий; '
                 'длительности рассчитаны монотонными часами соответствующего компонента.</p>'
                 '<section><h2>Стадии</h2>'+table(('ShardId','AssignmentId','WorkerInstanceId','AttemptNumber','DownloadAttemptNumber','Stage','WallMs','ActiveMs','Source'),data['Stages'])+'</section>'
@@ -319,6 +358,8 @@ class ExportProfile:
                 '<section><h2>Workers</h2><p>Processing utilization — сумма известных интервалов обработки '
                 'worker / wall time сессии; при неполных измерениях значение неизвестно.</p>'+
                 table(('WorkerInstanceId','Attempts','AssignedElements','ProcessedSources','ProcessingWallMs','ProcessingSourcesPerMinute','ProcessingUtilization'),data['Workers'])+'</section>'
+                '<section><h2>Длительность обработки shards</h2>'+
+                table(('Known','Total','MinMs','MedianMs','P95Ms','MaxMs'), [data['ShardProcessingDuration']])+'</section>'
                 '<section><h2>Shards</h2>'+table(('ShardId','TaskId','WorkerInstanceId','State','ElementCount','StatusTimes','QueueWaitMs','MonitoringRpcWallMs','UploadWallMs','HashVerificationMs','ArtifactPublicationMs','DownloadWallMs','ManagerServeWallMs','ChunkTransferWallMs','LocalFinalizeWallMs','ValidationWallMs','ResumedBytes','DownloadedBytes','ChunkCalls','MeshCacheHits','MeshCacheMisses','SnapshotIndexHits','SnapshotIndexMisses'),data['Shards'])+'</section>'
                 '<section><h2>Кэши worker</h2><p>Hits/misses относятся к задаче. Entries, bytes и evictions — снимок накопительного состояния worker при завершении задачи; их не суммируют по shards.</p>'+
                 table(('ShardId','WorkerInstanceId','AttemptNumber','MeshCacheHits','MeshCacheMisses','SnapshotIndexHits','SnapshotIndexMisses','WorkerMeshCacheEntries','WorkerMeshCacheBytes','WorkerMeshCacheEvictions','WorkerSnapshotIndexEntries','WorkerSnapshotIndexBytes','WorkerSnapshotIndexEvictions'),data['Attempts'])+'</section>'

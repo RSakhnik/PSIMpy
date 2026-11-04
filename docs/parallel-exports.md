@@ -118,6 +118,17 @@ SDK traversal, mesh read, bounds и binary encoding измеряются в work
 В таблице workers `AssignedElements` — сумма размеров назначенных shards по попыткам;
 `ProcessedSources` и `ProcessingSourcesPerMinute` рассчитываются по фактическим
 `SourceElements` worker и processing wall. При неполной telemetry скорость неизвестна.
+На уровне сессии `EndToEndSourcesPerMinute` и `ArtifactBytesPerSecond` делят
+фактически обработанные sources и суммарный размер опубликованных artifacts на
+активное wall time экспорта. Они доступны лишь после полного завершения и при
+наличии всех соответствующих измерений. Это скорость всей системы, включая
+ожидания и передачи, а не скорость сети или SDK. Распределение
+`ShardProcessingDuration` показывает min/median/p95/max по известным processing
+интервалам и число измеренных shards; неполное покрытие указано явно.
+`compare()` вычисляет `Speedup` и `ScalingEfficiency` только для завершённых
+прогонов с одинаковыми моделью, версией, выборкой, geometry options и размером
+shard. Формула efficiency: `Speedup / (workers_current / workers_previous)`.
+Разное число workers остаётся предупреждением в обычном сравнении wall time.
 Manager сообщает queue wait, SHA verification, artifact publication и время чтения
 каждого result chunk. Worker upload включает retry и ожидания RPC. `UploadRetryCount`
 и `worker-upload-retry-wait` относятся к сохранённому artifact и переживают рестарт
@@ -175,6 +186,10 @@ Offline profile fixture: 1000 synthetic shards, 1000 attempts и 27003 stage row
 Python allocations. HTML в обоих вариантах занял 5.05 MB. Это стоимость отчёта после
 выгрузки, а не overhead SDK или передачи; данные fixtures не доказывают изменение
 производительности реального Pilot.
+После добавления системных KPI тот же fixture дал медианы 22.01 ms построения и
+271.55 ms HTML, tracemalloc peak 40.05 MB, размер HTML 5.22 MB. Прогоны не были
+чередованы с предыдущей версией, поэтому разница может включать шум среды;
+добавленная строка распределения shards увеличивает объём отчёта.
 
 ## Стенд на двух машинах
 
