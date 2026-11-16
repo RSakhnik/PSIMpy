@@ -591,3 +591,18 @@ failures that precede success. Events contain session and operation IDs,
 request/task IDs when available, timing, HTTP status, error code and retry
 delay. Only a fixed set of fields is written; credentials and request bodies
 are excluded. A new process may append to the same file with a new session ID.
+
+## Stream property batches to CSV
+
+```python
+from bim_bridge import write_properties_csv
+
+write_properties_csv(
+    iter_properties_parallel(client, model_key, element_ids,
+        "/content/drive/MyDrive/properties", model_version_utc=version),
+    "/content/drive/MyDrive/properties.csv")
+```
+
+The long-form CSV includes composite IDs, model version, category, property
+name, type, unit and value. It also retains an ID row for an element without
+properties. A failed batch leaves no completed CSV file.
