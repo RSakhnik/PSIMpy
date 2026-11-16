@@ -10,6 +10,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from .errors import BimBridgeError
 from ._files import publish
@@ -41,9 +43,11 @@ class Transport:
         self._opener = urllib.request.build_opener(_NoRedirect())
 
     def fork(self):
-        return type(self)(self.base_url,self._token,timeout=self.timeout,retries=self.retries,
+        forked = type(self)(self.base_url,self._token,timeout=self.timeout,retries=self.retries,
                           auth='token' if 'X-Api-Token' in self._headers else 'bearer',max_json_bytes=self.max_json_bytes,
                           retry_base=self.retry_base,retry_cap=self.retry_cap,retry_jitter=self.retry_jitter)
+        forked.journal = getattr(self, 'journal', None)
+        return forked
 
     def _retry_delay(self, attempt):
         base = min(self.retry_cap, self.retry_base * 2 ** attempt)
@@ -68,32 +72,50 @@ class Transport:
         if data is not None:
             headers["Content-Type"] = "application/json; charset=utf-8"
         attempts = self.retries + 1 if method == "GET" else 1
+        operation_id = str(uuid.uuid4())
+        task_id = path.split('/')[2] if path.startswith('/tasks/') and len(path.split('/')) > 2 else None
+        def record(event, began):
+            event.update(OperationId=operation_id, Operation=method + ' ' + path,
+                         TaskId=task_id, StartTime=began,
+                         EndTime=datetime.now(timezone.utc).isoformat(),
+                         ModelKey=payload.get('targetModelKey') or payload.get('TargetModelKey') if isinstance(payload, dict) else None,
+                         ModelVersionUtc=payload.get('ModelVersionUtc') if isinstance(payload, dict) else None,
+                         ClientRequestId=payload.get('clientRequestId') if isinstance(payload, dict) else None,
+                         PayloadBytes=len(data) if data is not None else 0)
+            recorder = getattr(self, 'telemetry', None)
+            if recorder: recorder(dict(event))
+            journal = getattr(self, 'journal', None)
+            if journal: journal(event)
         for attempt in range(attempts):
             started = time.perf_counter_ns()
+            began = datetime.now(timezone.utc).isoformat()
             error_code = None
             delay = self._retry_delay(attempt) if attempt + 1 < attempts else 0
             try:
                 result = self._opener.open(urllib.request.Request(self.base_url + path, data, headers, method=method), timeout=self.timeout)
-                recorder = getattr(self, 'telemetry', None)
-                if recorder: recorder(dict(Attempt=attempt+1, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
-                                           RetryWaitMs=0, Success=True, ErrorCode=None))
+                record(dict(Attempt=attempt+1, RetryCount=attempt,
+                            NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
+                            RetryWaitMs=0, Success=True, ErrorCode=None,
+                            HttpStatus=getattr(result, 'status', None), Retryable=False), began)
                 return result
             except urllib.error.HTTPError as exc:
                 with exc:
                     error = self._error(exc, exc.code)
                 error_code = error.code
                 retry = exc.code in (429, 502, 503, 504) and attempt + 1 < attempts
-                recorder = getattr(self, 'telemetry', None)
-                if recorder: recorder(dict(Attempt=attempt+1, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
-                                           RetryWaitMs=delay*1000 if retry else 0,
-                                           Success=False, ErrorCode=error_code))
+                record(dict(Attempt=attempt+1, RetryCount=attempt,
+                            NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
+                            RetryWaitMs=delay*1000 if retry else 0,
+                            Success=False, ErrorCode=error_code,
+                            HttpStatus=exc.code, Retryable=error.retryable), began)
                 if exc.code not in (429, 502, 503, 504) or attempt + 1 == attempts:
                     raise error from None
             except (urllib.error.URLError, TimeoutError, OSError):
-                recorder = getattr(self, 'telemetry', None)
-                if recorder: recorder(dict(Attempt=attempt+1, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
-                                           RetryWaitMs=delay*1000,
-                                           Success=False, ErrorCode='TRANSPORT_ERROR'))
+                record(dict(Attempt=attempt+1, RetryCount=attempt,
+                            NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
+                            RetryWaitMs=delay*1000,
+                            Success=False, ErrorCode='TRANSPORT_ERROR',
+                            HttpStatus=None, Retryable=True), began)
                 if attempt + 1 == attempts:
                     raise BimBridgeError("TRANSPORT_ERROR", "Соединение с BIM Bridge не выполнено", retryable=True) from None
             time.sleep(delay)

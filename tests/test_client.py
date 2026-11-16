@@ -120,6 +120,20 @@ class ClientTests(unittest.TestCase):
         self.assertEqual([e['Success'] for e in events],[False,True])
         self.assertEqual(events[0]['RetryWaitMs'],250)
         self.assertEqual(client._http.fork().retry_base,.25)
+    def test_jsonl_journal_keeps_failed_attempt_after_success(self):
+        type(self).handler=staticmethod(lambda *a:(503,{}, {}) if len(self.calls)==1 else (200,{}, {'Ready':True}))
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'events.jsonl'
+            client=BimBridge(self.url,token='test-secret',retries=1,
+                             retry_jitter=0,event_journal_path=path)
+            with patch('bim_bridge.transport.time.sleep'):
+                self.assertTrue(client.health()['Ready'])
+            events=[json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+            self.assertEqual([e['Success'] for e in events],[False,True])
+            self.assertEqual(events[0]['HttpStatus'],503)
+            self.assertEqual(events[0]['SessionId'],events[1]['SessionId'])
+            self.assertNotIn('test-secret',path.read_text(encoding='utf-8'))
+            self.assertIs(client._http.fork().journal,client._http.journal)
     def test_gzip_magic_and_limit(self):
         zipped=gzip.compress(json.dumps({'x':'я'*100}).encode())
         type(self).handler=staticmethod(lambda *a:(200,{},zipped))

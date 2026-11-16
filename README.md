@@ -578,3 +578,16 @@ report includes property category, name, type and unit. `search_exhausted`,
 outcomes. `sample_stable` does not prove full coverage. A full inventory is
 reported only when every searched element was loaded and the search completed.
 Keep both the report and adjacent search state and SQLite ledger together.
+
+## Durable REST attempt journal
+
+```python
+client = BimBridge(url, token=token,
+    event_journal_path="/content/drive/MyDrive/psimpy-events.jsonl")
+```
+
+Each HTTP attempt is appended as a separate fsynced JSONL event, including
+failures that precede success. Events contain session and operation IDs,
+request/task IDs when available, timing, HTTP status, error code and retry
+delay. Only a fixed set of fields is written; credentials and request bodies
+are excluded. A new process may append to the same file with a new session ID.
