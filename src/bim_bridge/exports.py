@@ -129,12 +129,13 @@ def export_artifact(client,operation,payload,destination,*,timeout=None,on_statu
             metadata=task.metadata()
         except BimBridgeError as error:
             missing=error.code in ('TASK_NOT_FOUND','RESULT_EXPIRED','EXPIRED') or error.status_code in (404,410)
+            failed_transient=error.code in ('TRANSPORT_TIMEOUT','LEASE_EXPIRED')
             partial=destination.with_name(destination.name+'.inprogress')
             download_state=destination.with_name(destination.name+'.download.json')
             # A missing task may be resubmitted only before any result bytes or
             # immutable metadata exist. Never carry partial chunks to a new TaskId.
             pristine=not state.get('Metadata') and not destination.exists() and not partial.exists() and not download_state.exists()
-            if attempt or not missing or not pristine:
+            if attempt or not (missing or failed_transient) or not pristine:
                 raise
             state.pop('TaskId',None)
             state['ClientRequestId']=str(uuid.uuid4())

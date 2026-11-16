@@ -113,10 +113,14 @@ def iter_search_complete(client, model_key, part_ids=None, *, conditions=(),
                     model_version_utc=state['ModelVersionUtc'], max_pages=1, **options)
                 page = next(pages)
             except BimBridgeError as error:
-                if error.code != 'CURSOR_EXPIRED' or not cursor:
+                recoverable = (error.code == 'CURSOR_EXPIRED' and bool(cursor)) or error.code in (
+                    'TRANSPORT_TIMEOUT', 'LEASE_EXPIRED')
+                if not recoverable:
                     raise
-                emit('cursor_expired', Success=False, ErrorCode=error.code,
-                     RecoveryReason='cursor_expired', RecoveryStrategy='restart_from_beginning',
+                emit('cursor_expired' if error.code == 'CURSOR_EXPIRED' else 'transport_recovery',
+                     Success=False, ErrorCode=error.code,
+                     RecoveryReason='cursor_expired' if error.code == 'CURSOR_EXPIRED' else 'worker_failure',
+                     RecoveryStrategy='restart_from_beginning',
                      RetryCount=state['Restarts'])
                 if state['Restarts'] >= max_restarts:
                     raise IncompleteResult('Search restart budget exhausted', state) from error

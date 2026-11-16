@@ -86,6 +86,22 @@ class PagingTests(unittest.TestCase):
             self.assertEqual(caught.exception.code,'MODEL_CHANGED')
             self.assertEqual(json.loads((Path(directory)/'search.json').read_text())['Status'],'model_changed')
 
+    def test_complete_search_restarts_after_worker_transport_timeout(self):
+        client=PageClient();failed=[False]
+        original=client.run
+        def run(operation,payload,**options):
+            if payload.get('Cursor')=='opaque-1' and not failed[0]:
+                failed[0]=True
+                raise BimBridgeError('TRANSPORT_TIMEOUT','worker did not respond')
+            return original(operation,payload,**options)
+        client.run=run
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'search.json'
+            rows=list(iter_search_complete(client,MODEL,[PART],page_size=2,state_path=path))
+            self.assertEqual(len(rows),5)
+            self.assertEqual(json.loads(path.read_text())['Restarts'],1)
+            self.assertEqual(json.loads(path.read_text())['Status'],'completed')
+
     def test_complete_search_resumes_mid_page(self):
         client=PageClient()
         with tempfile.TemporaryDirectory() as directory:
