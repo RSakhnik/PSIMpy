@@ -183,9 +183,11 @@ def export_artifact(client,operation,payload,destination,*,timeout=None,on_statu
     return ExportArtifact(destination,task.id,metadata,profile)
 
 
-def export_elements(client,model_key,destination,*,part_ids=None,conditions=(),logical_operator='And',
+def export_elements(client,model_key,destination,*,part_ids=None,conditions=(),element_ids=None,logical_operator='And',
                     property_names=None,include_identifiers=True,model_version_utc=None,**options):
-    payload=_selection(model_key,part_ids,conditions,logical_operator,model_version_utc)
+    if element_ids is not None and (part_ids is not None or conditions):
+        raise ValueError('element_ids cannot be combined with part_ids or conditions')
+    payload=_selection(model_key,part_ids,conditions,logical_operator,model_version_utc,element_ids)
     payload.update(PropertyNames=property_names,IncludeIdentifiers=include_identifiers,Gzip=True)
     return export_artifact(client,'export-elements',payload,destination,**options)
 

@@ -13,6 +13,8 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 
 from .errors import BimBridgeError
 
@@ -54,10 +56,12 @@ class PilotTransport:
         self._lock=threading.Lock();self._process=None
 
     def fork(self):
-        return type(self)(self._credentials['ServerDatabase'],self._credentials['Login'],self._credentials['Password'],
+        forked = type(self)(self._credentials['ServerDatabase'],self._credentials['Login'],self._credentials['Password'],
             adapter=self._command[1],dotnet=self._command[0],timeout=self.timeout,retries=self.retries,
             max_json_bytes=self.max_json_bytes,max_chunk_bytes=self.max_chunk_bytes,
             enterprise_code=self._credentials['EnterpriseCode'])
+        forked.journal = getattr(self, 'journal', None)
+        return forked
 
     def _exchange(self,method,**arguments):
         process=self._process
@@ -85,11 +89,24 @@ class PilotTransport:
         # Submit is never blindly retried. ReadResultChunk is deterministic and
         # safe to repeat after a lost response or a fresh Pilot session.
         attempts=self.retries+1 if method in ('GetHealth','GetWorkers','GetTaskStatus','GetResultMetadata','ReadResultChunk') else 1
+        operation_id=str(uuid.uuid4())
+        request=arguments.get('Request') or {}
+        def record(event,began):
+            event.update(Operation='Pilot '+method,OperationId=operation_id,
+                         TaskId=arguments.get('TaskId'),
+                         ClientRequestId=request.get('clientRequestId') if isinstance(request,dict) else None,
+                         ModelKey=request.get('targetModelKey') if isinstance(request,dict) else None,
+                         StartTime=began,EndTime=datetime.now(timezone.utc).isoformat())
+            recorder=getattr(self,'telemetry',None)
+            if recorder:recorder(dict(event))
+            journal=getattr(self,'journal',None)
+            if journal:journal(event)
         lock_started=time.perf_counter_ns()
         with self._lock:
             lock_wait_ms=(time.perf_counter_ns()-lock_started)/1e6
             for attempt in range(attempts):
                 started=time.perf_counter_ns()
+                began=datetime.now(timezone.utc).isoformat()
                 connect_ms=0
                 try:
                     if self._process is None or self._process.poll() is not None:
@@ -98,18 +115,17 @@ class PilotTransport:
                         self._exchange('Connect',**self._credentials)
                         connect_ms=(time.perf_counter_ns()-started)/1e6
                     result=self._exchange(method,**arguments)
-                    recorder=getattr(self,'telemetry',None)
-                    if recorder:recorder(dict(Attempt=attempt+1, TransportWaitMs=lock_wait_ms if attempt==0 else 0,
+                    record(dict(Attempt=attempt+1, TransportWaitMs=lock_wait_ms if attempt==0 else 0,
                                               ConnectWallMs=connect_ms, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
-                                              RetryWaitMs=0, Success=True, ErrorCode=None))
+                                              RetryWaitMs=0, Success=True, ErrorCode=None),began)
                     return result
                 except (OSError,BimBridgeError) as error:
                     retry=not (isinstance(error,BimBridgeError) and not error.retryable) and attempt+1<attempts
-                    recorder=getattr(self,'telemetry',None)
-                    if recorder:recorder(dict(Attempt=attempt+1, TransportWaitMs=lock_wait_ms if attempt==0 else 0,
+                    record(dict(Attempt=attempt+1, TransportWaitMs=lock_wait_ms if attempt==0 else 0,
                                               ConnectWallMs=connect_ms, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
                                               RetryWaitMs=min(2**attempt,5)*1000 if retry else 0,
-                                              Success=False, ErrorCode=getattr(error,'code','PILOT_TRANSPORT_ERROR')))
+                                              Success=False, ErrorCode=getattr(error,'code','PILOT_TRANSPORT_ERROR'),
+                                              Retryable=retry),began)
                     self.close()
                     if isinstance(error,BimBridgeError) and not error.retryable:raise
                     if attempt+1==attempts:

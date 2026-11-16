@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import time
 import uuid
 import warnings
 from .errors import BimBridgeError, IncompleteResult
@@ -19,10 +20,42 @@ def _atomic_json(path, value):
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(value, stream, ensure_ascii=False)
             stream.flush(); os.fsync(stream.fileno())
-        os.replace(temp, path)
+        for attempt in range(6):
+            try:
+                os.replace(temp, path)
+                break
+            except PermissionError:
+                if os.name != 'nt' or attempt == 5:
+                    raise
+                time.sleep(.02 * (attempt + 1))
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
+
+
+def _batch_complete(operation, payload, result):
+    """Whether a result may be reused as a complete batch response."""
+    if operation not in ('load-element-properties', 'get-element-relations'):
+        return True
+    if not isinstance(result, dict) or result.get('Truncated') or any(
+            result.get(name) for name in ('FailedElementIds', 'ElementErrors', 'Warnings')):
+        return False
+    rows = result.get('Elements')
+    if not isinstance(rows, list):
+        return False
+    try:
+        requested = [(guid(e['ModelPartId']), guid(e['ElementId'])) for e in payload['ElementIds']]
+        actual = [(guid(e['Element']['ModelPartId']), guid(e['Element']['ElementId']))
+                  if operation == 'get-element-relations' else
+                  (guid(e['ModelPartId']), guid(e['ElementId'])) for e in rows]
+    except (KeyError, TypeError, ValueError):
+        return False
+    if len(requested) != len(set(requested)) or len(actual) != len(set(actual)) or set(actual) != set(requested):
+        return False
+    if operation == 'get-element-relations' and any(e.get('ChildrenTruncated') for e in rows):
+        return False
+    expected_version = payload.get('ModelVersionUtc')
+    return not expected_version or result.get('ModelVersionUtc') == expected_version
 
 class Checkpoints:
     """Одна папка — один снимок выгрузки. Для свежих данных создайте новую папку."""
@@ -37,15 +70,26 @@ class Checkpoints:
         wait_options = {k: options.pop(k) for k in ("timeout", "on_status", "cancel_on_timeout") if k in options}
         key = hashlib.sha256(json.dumps([operation, payload, options], sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
         result_path = self.directory / (key + '.result.json')
+        checksum_path = self.directory / (key + '.sha256.json')
         state_path = self.directory / (key + '.task.json')
         spatial = operation == 'get-element-spatial-data'
         unpinned_read = operation in ('search-elements', 'load-element-properties', 'get-element-relations', 'get-element-spatial-data') and not payload.get('ModelVersionUtc')
         refresh_completed = result_path.exists() and unpinned_read
         if result_path.exists() and not unpinned_read:
+            cache_valid = True
+            if checksum_path.exists():
+                try:
+                    expected = json.loads(checksum_path.read_text(encoding='utf-8'))['Sha256']
+                    cache_valid = hashlib.sha256(result_path.read_bytes()).hexdigest() == expected
+                except (KeyError, ValueError, OSError):
+                    cache_valid = False
+            elif operation in ('load-element-properties', 'get-element-relations',
+                               'get-element-spatial-data'):
+                cache_valid = False
             try:
-                result = json.loads(result_path.read_text(encoding="utf-8"))
+                result = json.loads(result_path.read_text(encoding="utf-8")) if cache_valid else None
             except (ValueError, OSError):
-                if not spatial:
+                if not spatial and operation not in ('load-element-properties', 'get-element-relations'):
                     raise
                 result = None
             if spatial:
@@ -54,7 +98,7 @@ class Checkpoints:
                     refresh_completed = True
                 usable = result is not None and not refresh_completed
             else:
-                usable = True
+                usable = result is not None and _batch_complete(operation, payload, result)
             if usable:
                 if payload.get('ModelVersionUtc'):
                     ExportSnapshot(payload['ModelVersionUtc']).accept(result)
@@ -62,6 +106,15 @@ class Checkpoints:
         state = json.loads(state_path.read_text()) if state_path.exists() and not refresh_completed else {"request_id": str(uuid.uuid4())}
         if spatial and state.get('spatial_incomplete'):
             state = {"request_id": str(uuid.uuid4())}
+        if state.get('batch_incomplete'):
+            if state.get('incomplete_attempts', 0) >= 3:
+                raise IncompleteResult('Repeated incomplete batch responses; start a new checkpoint session', state)
+            state = {'request_id': str(uuid.uuid4()),
+                     'incomplete_attempts': state.get('incomplete_attempts', 0)}
+        def mark_incomplete():
+            state['batch_incomplete'] = True
+            state['incomplete_attempts'] = state.get('incomplete_attempts', 0) + 1
+            _atomic_json(state_path, state)
         for attempt in range(2):
             _atomic_json(state_path, state)
             if not state.get("task_id"):
@@ -78,14 +131,23 @@ class Checkpoints:
                     continue
                 raise
             if payload.get('ModelVersionUtc'):
-                ExportSnapshot(payload['ModelVersionUtc']).accept(result)
+                try:
+                    ExportSnapshot(payload['ModelVersionUtc']).accept(result)
+                except IncompleteResult:
+                    if operation in ('load-element-properties', 'get-element-relations'):
+                        mark_incomplete()
+                    raise
             if spatial:
                 from .spatial import _complete
                 if not _complete(result, payload['ElementIds']):
                     state['spatial_incomplete'] = True
                     _atomic_json(state_path, state)
                     return result
-            _atomic_json(result_path, result)
+            if _batch_complete(operation, payload, result):
+                _atomic_json(result_path, result)
+                _atomic_json(checksum_path, {'Sha256': hashlib.sha256(result_path.read_bytes()).hexdigest()})
+            elif operation in ('load-element-properties', 'get-element-relations'):
+                mark_incomplete()
             return result
 
 def select_parts(context, *, project=None, name_contains=None, model_key=None, allow_partial=False):
@@ -116,6 +178,12 @@ def _run(client, checkpoints, operation, payload, model_key, options):
 def _checked(result):
     if result.get('FailedElementIds') or result.get('ElementErrors') or result.get('Warnings'):
         raise IncompleteResult("Ответ содержит пропуски или предупреждения. Подробности: exception.result", result)
+    return result
+
+
+def _strict_batch(operation, payload, result):
+    if not _batch_complete(operation, payload, result):
+        raise IncompleteResult('Пакет неполный, содержит повторяющиеся или посторонние ID', result)
     return result
 
 class ExportSnapshot:
@@ -262,11 +330,7 @@ def iter_properties(client, model_key, elements, *, batch_size=500, property_nam
             snapshot.payload({'TargetModelKey': guid(model_key), 'ElementIds': batch, 'PropertyNames': property_names,
              'BatchSize': min(batch_size, 100)}), model_key, options))
         if strict:
-            _checked(result)
-            expected = {(e['ModelPartId'], e['ElementId']) for e in batch}
-            actual = {(e['ModelPartId'], e['ElementId']) for e in result['Elements']}
-            if actual != expected:
-                raise IncompleteResult("Пакет свойств неполный", result)
+            _strict_batch('load-element-properties', {'ElementIds': batch, 'ModelVersionUtc': snapshot.version}, result)
         yield result
 
 def iter_relations(client, model_key, elements, *, batch_size=500, include_parent=True,
@@ -280,17 +344,13 @@ def iter_relations(client, model_key, elements, *, batch_size=500, include_paren
             snapshot.payload({'TargetModelKey': guid(model_key), 'ElementIds': batch, 'IncludeParent': include_parent,
              'IncludeChildren': include_children, 'MaxChildren': max_children}), model_key, options))
         if strict:
-            _checked(result)
-            expected = {(e['ModelPartId'], e['ElementId']) for e in batch}
-            actual = {(e['Element']['ModelPartId'], e['Element']['ElementId']) for e in result['Elements']}
-            if actual != expected:
-                raise IncompleteResult("Пакет связей неполный", result)
             if result.get('Truncated') or any(e.get('ChildrenTruncated') for e in result['Elements']):
                 if len(batch) == 1:
                     raise IncompleteResult("Даже один элемент превышает лимит детей API", result)
                 middle = len(batch)//2
                 yield from fetch(batch[:middle]); yield from fetch(batch[middle:])
                 return
+            _strict_batch('get-element-relations', {'ElementIds': batch, 'ModelVersionUtc': snapshot.version}, result)
         yield result
     for batch in _batches(elements, batch_size):
         yield from fetch(batch)

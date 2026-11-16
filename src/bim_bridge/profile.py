@@ -1,5 +1,6 @@
 """Portable reports for one durable BIM Bridge export session."""
 import csv
+from collections import Counter
 from datetime import datetime, timezone
 from html import escape
 import json
@@ -200,6 +201,19 @@ class ExportProfile:
                               P95Ms=processing_times[(19 * len(processing_times) + 19) // 20 - 1]
                               if processing_times else None,
                               MaxMs=processing_times[-1] if processing_times else None)
+        errors = Counter()
+        for attempt in attempts:
+            error = attempt.get('Error')
+            if error:
+                errors[error.get('Code', 'UNKNOWN') if isinstance(error, dict) else 'UNKNOWN'] += 1
+        recovered = sum(shard['State'] in ('READY', 'CONSUMED') and shard['Retries'] > 0
+                        for shard in shards)
+        first_try = sum(shard['State'] in ('READY', 'CONSUMED') and shard['Retries'] == 0
+                        for shard in shards)
+        prior = [attempt for shard in shards for attempt in shard['PreviousAttempts']]
+        reprocessed = (sum(attempt['ProcessedSources'] for attempt in prior)
+                       if prior and all(attempt['ProcessedSources'] is not None for attempt in prior)
+                       else 0 if not prior else None)
         return dict(SchemaVersion=1, ExportSessionId=manifest.get('ExportSessionId'),
                     ModelKey=manifest.get('ModelKey'), ModelVersionUtc=manifest.get('ModelVersionUtc'),
                     Options=manifest.get('Options'), ShardSize=manifest.get('ShardSize'),
@@ -208,6 +222,13 @@ class ExportProfile:
                     EligibleWorkers=manifest.get('EligibleWorkers'),
                     TotalWallMs=total_wall_ms,
                     Complete=manifest.get('Complete'), CompletedShards=len(ready),
+                    ErrorCounts=dict(errors), RecoveredShards=recovered,
+                    UnfinishedShards=len(shards)-len(ready),
+                    FirstAttemptSuccessRate=first_try/len(ready) if ready else None,
+                    ReprocessedElements=None,
+                    PotentiallyLostWorkElementsEstimate=reprocessed,
+                    MetricEvidence={'PotentiallyLostWorkElementsEstimate':
+                                    'sum of measured prior-attempt processed sources; overlap with successful attempts is unverified'},
                     ActiveWorkers=active_workers,
                     TotalShards=len(shards), ArtifactBytes=artifact_bytes,
                     ProcessedSources=processed_sources,

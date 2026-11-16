@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 from bim_bridge import BimBridge, Condition, Element, FileReference, BimBridgeError, TaskFailed, TaskTimeout
@@ -100,6 +101,43 @@ class ClientTests(unittest.TestCase):
         self.calls.clear();self.client._http.retries=2
         with self.assertRaises(BimBridgeError) as caught:self.client.submit('echo')
         self.assertEqual(len(self.calls),1);self.assertIsNotNone(caught.exception.client_request_id)
+    def test_lost_post_response_reuses_client_request_id(self):
+        accepted=[]
+        def post(method,path,body):
+            if method=='POST':
+                request=json.loads(body)['clientRequestId']
+                if request not in accepted:accepted.append(request)
+                return 202,{}, {'TaskId':ID}
+            return self.default(method,path,body)
+        type(self).handler=staticmethod(post)
+        original=self.client._http.json
+        attempts=[]
+        def lost(method,path,payload=None):
+            if method=='POST':
+                attempts.append(payload['clientRequestId'])
+                if len(attempts)==1:
+                    original(method,path,payload)
+                    raise BimBridgeError('TRANSPORT_ERROR','response lost',retryable=True)
+            return original(method,path,payload)
+        self.client._http.json=lost
+        recovery_events=[]
+        self.client._http.journal=recovery_events.append
+        with patch('bim_bridge.client.time.sleep'):
+            task=self.client.submit('echo')
+        self.assertEqual(task.id,ID)
+        self.assertEqual(attempts,[task.client_request_id]*2)
+        self.assertEqual(accepted,[task.client_request_id])
+        recovery=next(event for event in recovery_events if event['EventType']=='submit_retry')
+        self.assertEqual(recovery['ClientRequestId'],task.client_request_id)
+        self.assertEqual(recovery['RecoveryStrategy'],'retry_same_client_request_id')
+        self.assertGreaterEqual(recovery['RetryWaitMs'],0)
+    def test_transport_failure_kind_depends_on_request_method(self):
+        with patch.object(self.client._http._opener,'open',side_effect=urllib.error.URLError('offline')):
+            for method, kind in [('GET','temporary'),('POST','ambiguous')]:
+                with self.assertRaises(BimBridgeError) as caught:
+                    self.client._http.json(method,'/health',{} if method=='POST' else None)
+                self.assertEqual(caught.exception.failure_kind,kind)
+                self.assertIsNone(caught.exception.status_code)
     def test_get_retry_and_redirect_block(self):
         type(self).handler=staticmethod(lambda *a:(503,{}, {}) if len(self.calls)==1 else (200,{}, {'Ready':True}))
         self.client._http.retries=1
@@ -110,6 +148,43 @@ class ClientTests(unittest.TestCase):
         type(self).handler=staticmethod(lambda *a:(302,{'Location':self.url+'/elsewhere'},b''))
         with self.assertRaises(BimBridgeError):self.client.health()
         self.assertEqual(len(self.calls),1)
+    def test_configurable_retry_delay_and_attempt_events(self):
+        type(self).handler=staticmethod(lambda *a:(503,{}, {}) if len(self.calls)==1 else (200,{}, {'Ready':True}))
+        client=BimBridge(self.url,token='test-secret',retries=1,retry_base=.25,retry_cap=.25,retry_jitter=0)
+        events=[];client._http.telemetry=events.append
+        with patch('bim_bridge.transport.time.sleep') as sleep:
+            self.assertTrue(client.health()['Ready'])
+        sleep.assert_called_once_with(.25)
+        self.assertEqual([e['Success'] for e in events],[False,True])
+        self.assertEqual(events[0]['RetryWaitMs'],250)
+        self.assertEqual(client._http.fork().retry_base,.25)
+    def test_jsonl_journal_keeps_failed_attempt_after_success(self):
+        type(self).handler=staticmethod(lambda *a:(503,{}, {}) if len(self.calls)==1 else (200,{}, {'Ready':True}))
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'events.jsonl'
+            client=BimBridge(self.url,token='test-secret',retries=1,
+                             retry_jitter=0,event_journal_path=path)
+            with patch('bim_bridge.transport.time.sleep'):
+                self.assertTrue(client.health()['Ready'])
+            events=[json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+            self.assertEqual([e['Success'] for e in events],[False,True])
+            self.assertEqual(events[0]['HttpStatus'],503)
+            self.assertEqual(events[0]['SessionId'],events[1]['SessionId'])
+            self.assertNotIn('test-secret',path.read_text(encoding='utf-8'))
+            self.assertIs(client._http.fork().journal,client._http.journal)
+    def test_jsonl_journal_records_invalid_body_after_http_success(self):
+        type(self).handler=staticmethod(lambda *a:(200,{},b'{broken'))
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'events.jsonl'
+            client=BimBridge(self.url,token='test-secret',retries=0,event_journal_path=path)
+            with self.assertRaises(BimBridgeError) as caught:
+                client.health()
+            self.assertEqual(caught.exception.code,'INVALID_RESPONSE')
+            events=[json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+            self.assertEqual([e['Success'] for e in events],[True,False])
+            self.assertEqual(events[1]['EventType'],'response_validation')
+            self.assertEqual(events[1]['ErrorCode'],'INVALID_RESPONSE')
+            self.assertEqual(events[0]['OperationId'],events[1]['OperationId'])
     def test_gzip_magic_and_limit(self):
         zipped=gzip.compress(json.dumps({'x':'я'*100}).encode())
         type(self).handler=staticmethod(lambda *a:(200,{},zipped))
@@ -136,6 +211,19 @@ class ClientTests(unittest.TestCase):
             metadata['Sha256']=hashlib.sha256(raw).hexdigest()
             self.client.download_file(FileReference(ID),Path(tmp)/'source.bin')
             self.assertEqual((Path(tmp)/'source.bin').read_bytes(),raw)
+    def test_expired_result_metadata_prevents_download(self):
+        def handler(method,path,body):
+            if path.endswith('/metadata'):
+                return 200,{}, {'ExpiresAtUtc':'2000-01-01T00:00:00Z'}
+            if path.endswith('/content'):
+                raise AssertionError('expired content must not be fetched')
+            return self.default(method,path,body)
+        type(self).handler=staticmethod(handler)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(BimBridgeError) as caught:
+                self.client.task(ID).download(Path(directory)/'result')
+            self.assertEqual(caught.exception.code,'RESULT_EXPIRED')
+            self.assertFalse(any(path.endswith('/content') for _,path,_,_ in self.calls))
     def test_bad_length_and_partial_stream_cleanup(self):
         type(self).handler=staticmethod(lambda *a:(200,{},b'abc'))
         with tempfile.TemporaryDirectory() as tmp:

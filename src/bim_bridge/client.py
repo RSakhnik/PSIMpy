@@ -74,19 +74,32 @@ class Task:
                           TransportType=type(self.client._http).__name__, Attempts=attempts))
         else:
             metadata = self.metadata()
+        expiry = metadata.get('ExpiresAtUtc')
+        if expiry:
+            expires_at = datetime.fromisoformat(expiry.replace('Z', '+00:00'))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at <= datetime.now(timezone.utc):
+                raise BimBridgeError('RESULT_EXPIRED', 'Result metadata reports expired content',
+                                     task_id=self.id, failure_kind='permanent')
         return self.client._http.download(f"/tasks/{self.id}/result/content", destination, metadata,
                                          overwrite=overwrite, decompress=decompress, progress=progress, resume=resume,
                                          telemetry=telemetry)
 
 class BimBridge:
     @classmethod
-    def from_pilot(cls, server_database, login, password, *, task_timeout=1800, poll_interval=2, **transport_options):
+    def from_pilot(cls, server_database, login, password, *, task_timeout=1800,
+                   poll_interval=2, event_journal_path=None, **transport_options):
         """Pilot Custom API directly; suitable for Colab with .NET SDK/runtime."""
         from .pilot import PilotTransport
         if task_timeout<=0 or poll_interval<=0:raise ValueError('Таймаут и интервал должны быть положительными')
         instance=cls.__new__(cls)
         instance._http=PilotTransport(server_database,login,password,**transport_options)
+        if event_journal_path is not None:
+            from .event_journal import EventJournal
+            instance._http.journal = EventJournal(event_journal_path)
         instance.task_timeout,instance.poll_interval=task_timeout,poll_interval
+        instance.submit_retries=0
         return instance
 
     def close(self):
@@ -95,15 +108,25 @@ class BimBridge:
 
     def __init__(self, base_url="https://360pilot.ru/bim-bridge", *, token=None,
                  token_file=None, task_timeout=1800, poll_interval=2, http_timeout=60,
-                 retries=2, auth="token", max_json_bytes=128*1024*1024):
+                 retries=2, auth="token", max_json_bytes=128*1024*1024,
+                 retry_base=1.0, retry_cap=5.0, retry_jitter=0.2,
+                 event_journal_path=None, submit_retries=1):
         if token is not None and token_file is not None:
             raise ValueError("Задайте token или token_file, не оба")
         if token_file is not None:
             token = Path(token_file).read_text(encoding="utf-8-sig").strip()
         if task_timeout <= 0 or poll_interval <= 0:
             raise ValueError("Таймаут и интервал должны быть положительными")
-        self._http = Transport(base_url, token, timeout=http_timeout, retries=retries, auth=auth, max_json_bytes=max_json_bytes)
+        if type(submit_retries) is not int or submit_retries < 0:
+            raise ValueError('submit_retries must be a nonnegative integer')
+        self._http = Transport(base_url, token, timeout=http_timeout, retries=retries, auth=auth,
+                               max_json_bytes=max_json_bytes, retry_base=retry_base,
+                               retry_cap=retry_cap, retry_jitter=retry_jitter)
+        if event_journal_path is not None:
+            from .event_journal import EventJournal
+            self._http.journal = EventJournal(event_journal_path)
         self.task_timeout, self.poll_interval = task_timeout, poll_interval
+        self.submit_retries = submit_retries
     def health(self):
         return self._http.json("GET", "/health")
     def export_elements(self, model_key, destination, **options):
@@ -119,6 +142,7 @@ class BimBridge:
         instance=type(self).__new__(type(self))
         instance._http=self._http.fork()
         instance.task_timeout,instance.poll_interval=self.task_timeout,self.poll_interval
+        instance.submit_retries=self.submit_retries
         return instance
     def statistics(self):
         return self._http.json("GET", "/statistics")
@@ -148,7 +172,7 @@ class BimBridge:
                preferred_worker_instance_id=None, required_capabilities=None,
                priority=0, can_retry=True, max_attempts=2, expires_at_utc=None,
                client_request_id=None, protocol_version=None):
-        """POST не повторяется автоматически при сетевой ошибке."""
+        """Retry an ambiguous transport failure with the same request ID only."""
         request_id = guid(client_request_id) if client_request_id else str(uuid.uuid4())
         body = {"clientRequestId": request_id, "operationCode": operation,
                 "payload": {} if payload is None else payload,
@@ -159,11 +183,26 @@ class BimBridge:
                 "expiresAtUtc": utc(expires_at_utc)}
         if protocol_version:
             body["protocolVersion"] = protocol_version
-        try:
-            accepted = self._http.json("POST", "/tasks", body)
-        except BimBridgeError as exc:
-            exc.client_request_id = request_id
-            raise
+        for attempt in range(self.submit_retries + 1):
+            try:
+                accepted = self._http.json("POST", "/tasks", body)
+                break
+            except BimBridgeError as exc:
+                exc.client_request_id = request_id
+                if (exc.code != 'TRANSPORT_ERROR' or exc.status_code is not None
+                        or attempt >= self.submit_retries):
+                    raise
+                delay = self._http._retry_delay(attempt)
+                journal = getattr(self._http, 'journal', None)
+                if journal:
+                    journal(dict(EventType='submit_retry', Operation='SubmitTask',
+                                 OperationId=request_id, ClientRequestId=request_id,
+                                 ModelKey=body['targetModelKey'], Attempt=attempt+1,
+                                 RetryCount=attempt+1, RetryWaitMs=delay*1000,
+                                 Success=None, ErrorCode=exc.code, Retryable=True,
+                                 RecoveryReason='ambiguous_post_transport',
+                                 RecoveryStrategy='retry_same_client_request_id'))
+                time.sleep(delay)
         return Task(self, guid(accepted["TaskId"]), request_id)
     def run(self, operation, payload=None, *, timeout=None, on_status=None,
             cancel_on_timeout=False, **submit_options):

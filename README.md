@@ -297,10 +297,14 @@ except BimBridgeError as error:
 ответ. HTTP 401 означает отказ в доступе, 404 — отсутствие, 409 — результат ещё
 не готов, 410 — результат истёк, 413 — слишком большой запрос или результат.
 Сохраняются коды сервера, включая ограничения ресурсов и недоступность модели.
+`BimBridgeError.failure_kind` различает `temporary`, `permanent` и `ambiguous`.
+Ошибка транспорта без HTTP-ответа на POST неоднозначна: она не доказывает ни
+принятие, ни отклонение задания Manager и не указывает на конкретный worker.
 
 Безопасные GET повторяются при временных сетевых ошибках и HTTP 429/502/503/504.
-POST не повторяется вслепую. При неясном исходе отправки сохраните
-`error.client_request_id` и повторите тот же запрос с этим идентификатором.
+POST после ошибки транспорта без HTTP-ответа повторяется ограниченно с тем же
+`ClientRequestId` (`submit_retries=1` по умолчанию). При исчерпании попыток
+сохраните `error.client_request_id` и повторите тот же запрос с этим ID.
 Дедупликация действует, пока менеджер хранит задание. Checkpoints делает это
 автоматически. Не запускайте новую полную выгрузку после каждого таймаута.
 
@@ -493,3 +497,138 @@ Scope, счётчики и BoundsMinX/Y/Z, BoundsMaxX/Y/Z, BoundsCenterX/Y/Z.
 Implementation report and synthetic results: [parallel-implementation-report.md](docs/parallel-implementation-report.md), [parallel-scaling.json](docs/parallel-scaling.json).
 
 0.3.1 additionally recovers the empty-partial/initial-journal crash window and atomically publishes owned shard paths on mounted filesystems without hard links. A real Python process crash/restart test verifies READY-file reuse and no duplicate SDK assignments.
+# HTTP retry policy
+
+For the REST connection, `BimBridge(..., http_timeout=60, retries=2,
+retry_base=1.0, retry_cap=5.0, retry_jitter=0.2)` controls bounded GET
+retries. Delays use exponential backoff with jitter and are recorded per
+attempt by the transport telemetry hook. `submit_retries=1` bounds retries of
+an ambiguous POST transport failure without an HTTP response. Every attempt
+uses the same `ClientRequestId` and request body, relying on Manager's
+deduplication contract. HTTP error responses are not automatically retried.
+The client cannot infer from `TRANSPORT_ERROR` whether Manager accepted a
+request; keep `error.client_request_id` if the retry budget is exhausted.
+
+## Resumable relation traversal
+
+```python
+from bim_bridge import walk_relations
+
+for relation in walk_relations(client, model_key, start_ids,
+                               direction="children", order="bfs",
+                               batch_size=100, state_path="/content/drive/MyDrive/walk.json"):
+    process(relation)
+```
+
+Run the same call with the same inputs and state path to resume. A resumed
+traversal may repeat the last yielded relation, so consumers should use the
+`(ModelPartId, ElementId)` pair for idempotent output. The state records the
+queue, visited IDs, and model version. The worker must report
+`ModelVersionUtc` for durable resumption; a version change stops the traversal.
+Keep the state on mounted persistent storage in Colab because its temporary
+filesystem does not survive removal of the runtime.
+
+## Resumable paged search
+
+```python
+from bim_bridge import iter_search_complete
+
+for element in iter_search_complete(client, model_key, part_ids,
+                                    page_size=10000,
+                                    state_path="/content/drive/MyDrive/search.json"):
+    process(element)
+```
+
+The state JSON and adjacent `.ids.sqlite` ledger must be kept together.
+The worker must support `paged-search-v2` and report `ModelVersionUtc`.
+On `CURSOR_EXPIRED`, the search restarts from the beginning with the original
+version and suppresses acknowledged `(ModelPartId, ElementId)` pairs. If the
+version changes, the iteration stops. A row delivered just before interruption
+may be delivered again on resume; make the consumer idempotent. Page and
+restart budgets produce `IncompleteResult`, not a successful completion.
+
+## Parallel properties for explicit IDs
+
+```python
+from bim_bridge import iter_properties_parallel
+
+for batch in iter_properties_parallel(client, model_key, element_ids,
+        "/content/drive/MyDrive/properties", property_names=["Name", "Mass"],
+        batch_size=500, concurrency=4):
+    process(batch["Elements"])
+```
+
+Each batch uses the worker's `export-elements` operation with explicit
+`ElementIds`. The Manager selects a suitable worker. Completed artifacts are
+reused after rerunning the same call with identical arguments. The client
+checks the artifact summary, version and exact composite ID set before yielding
+a batch. Invalid batches get separate bounded attempts (`max_batch_retries`),
+while transient transport failures resume the same task path with
+`max_transport_resumes` and valid batch artifacts are reused. Keep the entire
+directory on persistent storage. This path requires
+the worker's `export-elements` and Manager's `artifact-upload-v2` capabilities.
+
+## Discover property schemas
+
+```python
+from bim_bridge import discover_property_schemas
+
+report = discover_property_schemas(client, model_key, part_ids,
+    "/content/drive/MyDrive/schemas.json", max_pages=500, max_loads=200)
+print(report["Status"], report["Coverage"], report["History"])
+```
+
+The search groups similar names by replacing digit runs with `#`. Pass a
+`group_key` callback and stable `group_name` to choose another rule. The saved
+report includes property category, name, type and unit. `search_exhausted`,
+`page_budget`, `load_budget`, `time_budget` and `sample_stable` are distinct
+outcomes. `sample_stable` does not prove full coverage. A full inventory is
+reported only when every searched element was loaded and the search completed.
+Keep both the report and adjacent search state and SQLite ledger together.
+
+## Durable REST attempt journal
+
+```python
+client = BimBridge(url, token=token,
+    event_journal_path="/content/drive/MyDrive/psimpy-events.jsonl")
+# The direct Pilot connection accepts the same journal option:
+# client = BimBridge.from_pilot(server_database, login, password,
+#     event_journal_path="/content/drive/MyDrive/psimpy-events.jsonl")
+```
+
+Each HTTP attempt is appended as a separate fsynced JSONL event, including
+failures that precede success. Events contain session and operation IDs,
+request/task IDs when available, timing, HTTP status, error code and retry
+delay. Only a fixed set of fields is written; credentials and request bodies
+are excluded. A new process may append to the same file with a new session ID.
+
+```python
+from bim_bridge import SessionProfile
+
+profile = SessionProfile.from_jsonl("/content/drive/MyDrive/psimpy-events.jsonl")
+print(profile.rows())
+profile.save_json("/content/drive/MyDrive/psimpy-profile.json")
+```
+
+The session profile reports wall time, the union of overlapping network
+intervals, summed per-request time, retry delays, error counts and recovery
+rates. Worker processing and queue metrics remain unknown in this REST-only
+profile; use `ExportProfile` for measured parallel artifact stages.
+
+## Stream property batches to CSV
+
+```python
+from bim_bridge import write_properties_csv
+
+write_properties_csv(
+    iter_properties_parallel(client, model_key, element_ids,
+        "/content/drive/MyDrive/properties", model_version_utc=version),
+    "/content/drive/MyDrive/properties.csv")
+```
+
+The long-form CSV includes composite IDs, model version, category, property
+name, type, unit and value. It also retains an ID row for an element without
+properties. A failed batch leaves no completed CSV file.
+
+See [recovery boundaries](docs/reliable-operations.md) for required server
+capabilities, durable storage guidance and known limitations.

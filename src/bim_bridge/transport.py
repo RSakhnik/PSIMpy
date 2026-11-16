@@ -4,11 +4,14 @@ import hashlib
 import io
 import json
 import os
+import random
 import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from .errors import BimBridgeError
 from ._files import publish
@@ -18,7 +21,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 class Transport:
-    def __init__(self, base_url, token, *, timeout=60, retries=2, auth="token", max_json_bytes=128*1024*1024):
+    def __init__(self, base_url, token, *, timeout=60, retries=2, auth="token", max_json_bytes=128*1024*1024,
+                 retry_base=1.0, retry_cap=5.0, retry_jitter=0.2):
         url = urllib.parse.urlsplit(base_url)
         if url.scheme not in ("https", "http") or not url.netloc or url.username or url.password or url.query or url.fragment:
             raise ValueError("base_url должен быть HTTP(S) URL без учётных данных, query и fragment")
@@ -26,18 +30,28 @@ class Transport:
             raise ValueError("Нужен непустой API-токен без переводов строк")
         if timeout <= 0 or retries < 0 or max_json_bytes <= 0:
             raise ValueError("Некорректные лимиты HTTP")
+        if retry_base <= 0 or retry_cap <= 0 or not 0 <= retry_jitter <= 1:
+            raise ValueError("Некорректная политика повторов")
         if auth not in ("token", "bearer"):
             raise ValueError("auth: token или bearer")
         self.base_url, self._token = base_url.rstrip("/"), token
         self.timeout, self.retries, self.max_json_bytes = timeout, retries, max_json_bytes
+        self.retry_base, self.retry_cap, self.retry_jitter = retry_base, retry_cap, retry_jitter
         self.max_chunk_bytes = 4 * 1024 * 1024
         self._headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
         self._headers["X-Api-Token" if auth == "token" else "Authorization"] = token if auth == "token" else "Bearer " + token
         self._opener = urllib.request.build_opener(_NoRedirect())
 
     def fork(self):
-        return type(self)(self.base_url,self._token,timeout=self.timeout,retries=self.retries,
-                          auth='token' if 'X-Api-Token' in self._headers else 'bearer',max_json_bytes=self.max_json_bytes)
+        forked = type(self)(self.base_url,self._token,timeout=self.timeout,retries=self.retries,
+                          auth='token' if 'X-Api-Token' in self._headers else 'bearer',max_json_bytes=self.max_json_bytes,
+                          retry_base=self.retry_base,retry_cap=self.retry_cap,retry_jitter=self.retry_jitter)
+        forked.journal = getattr(self, 'journal', None)
+        return forked
+
+    def _retry_delay(self, attempt):
+        base = min(self.retry_cap, self.retry_base * 2 ** attempt)
+        return base * random.uniform(1 - self.retry_jitter, 1 + self.retry_jitter)
 
     def _error(self, response, status):
         try:
@@ -50,7 +64,7 @@ class Transport:
             return BimBridgeError(f"HTTP_{status}", "Ответ сервера не содержит JSON ошибки",
                 status_code=status, retryable=status in (429, 502, 503, 504))
 
-    def open(self, method, path, payload=None, *, headers=None):
+    def open(self, method, path, payload=None, *, headers=None, operation_id=None):
         if not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
             raise ValueError("Нужен относительный путь API")
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -58,52 +72,88 @@ class Transport:
         if data is not None:
             headers["Content-Type"] = "application/json; charset=utf-8"
         attempts = self.retries + 1 if method == "GET" else 1
+        operation_id = operation_id or str(uuid.uuid4())
+        task_id = path.split('/')[2] if path.startswith('/tasks/') and len(path.split('/')) > 2 else None
+        def record(event, began):
+            event.update(OperationId=operation_id, Operation=method + ' ' + path,
+                         TaskId=task_id, StartTime=began,
+                         EndTime=datetime.now(timezone.utc).isoformat(),
+                         ModelKey=payload.get('targetModelKey') or payload.get('TargetModelKey') if isinstance(payload, dict) else None,
+                         ModelVersionUtc=payload.get('ModelVersionUtc') if isinstance(payload, dict) else None,
+                         ClientRequestId=payload.get('clientRequestId') if isinstance(payload, dict) else None,
+                         PayloadBytes=len(data) if data is not None else 0)
+            recorder = getattr(self, 'telemetry', None)
+            if recorder: recorder(dict(event))
+            journal = getattr(self, 'journal', None)
+            if journal: journal(event)
         for attempt in range(attempts):
             started = time.perf_counter_ns()
+            began = datetime.now(timezone.utc).isoformat()
             error_code = None
+            delay = self._retry_delay(attempt) if attempt + 1 < attempts else 0
             try:
                 result = self._opener.open(urllib.request.Request(self.base_url + path, data, headers, method=method), timeout=self.timeout)
-                recorder = getattr(self, 'telemetry', None)
-                if recorder: recorder(dict(Attempt=attempt+1, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
-                                           RetryWaitMs=0, Success=True, ErrorCode=None))
+                record(dict(EventType='http_attempt', Attempt=attempt+1, RetryCount=attempt,
+                            NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
+                            RetryWaitMs=0, Success=True, ErrorCode=None,
+                            HttpStatus=getattr(result, 'status', None), Retryable=False), began)
                 return result
             except urllib.error.HTTPError as exc:
                 with exc:
                     error = self._error(exc, exc.code)
                 error_code = error.code
                 retry = exc.code in (429, 502, 503, 504) and attempt + 1 < attempts
-                recorder = getattr(self, 'telemetry', None)
-                if recorder: recorder(dict(Attempt=attempt+1, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
-                                           RetryWaitMs=min(2 ** attempt, 5)*1000 if retry else 0,
-                                           Success=False, ErrorCode=error_code))
+                record(dict(EventType='http_attempt', Attempt=attempt+1, RetryCount=attempt,
+                            NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
+                            RetryWaitMs=delay*1000 if retry else 0,
+                            Success=False, ErrorCode=error_code,
+                            HttpStatus=exc.code, Retryable=error.retryable), began)
                 if exc.code not in (429, 502, 503, 504) or attempt + 1 == attempts:
                     raise error from None
             except (urllib.error.URLError, TimeoutError, OSError):
-                recorder = getattr(self, 'telemetry', None)
-                if recorder: recorder(dict(Attempt=attempt+1, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
-                                           RetryWaitMs=min(2 ** attempt, 5)*1000 if attempt+1<attempts else 0,
-                                           Success=False, ErrorCode='TRANSPORT_ERROR'))
+                record(dict(EventType='http_attempt', Attempt=attempt+1, RetryCount=attempt,
+                            NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
+                            RetryWaitMs=delay*1000,
+                            Success=False, ErrorCode='TRANSPORT_ERROR',
+                            HttpStatus=None, Retryable=True), began)
                 if attempt + 1 == attempts:
-                    raise BimBridgeError("TRANSPORT_ERROR", "Соединение с BIM Bridge не выполнено", retryable=True) from None
-            time.sleep(min(2 ** attempt, 5))
+                    raise BimBridgeError("TRANSPORT_ERROR", "Соединение с BIM Bridge не выполнено",
+                                         retryable=True,
+                                         failure_kind='ambiguous' if method == 'POST' else 'temporary') from None
+            time.sleep(delay)
 
     def json(self, method, path, payload=None):
-        with self.open(method, path, payload) as response:
-            raw = response.read(self.max_json_bytes + 1)
-        if len(raw) > self.max_json_bytes:
-            raise BimBridgeError("RESULT_TOO_LARGE", "Используйте Task.download() для большого результата")
-        if raw.startswith(b"\x1f\x8b"):
-            with gzip.GzipFile(fileobj=io.BytesIO(raw)) as zipped:
-                raw = zipped.read(self.max_json_bytes + 1)
-            if len(raw) > self.max_json_bytes:
-                raise BimBridgeError("RESULT_TOO_LARGE", "Распакованный JSON превышает лимит клиента")
+        operation_id = str(uuid.uuid4())
+        opened = False
         try:
-            result = json.loads(raw.decode("utf-8-sig")) if raw else {}
-        except (ValueError, UnicodeError):
-            raise BimBridgeError("INVALID_RESPONSE", "Ожидался JSON. Для файла используйте download()") from None
-        if isinstance(result, dict) and result.get("Error"):
-            error = result["Error"]
-            raise BimBridgeError(error.get("Code", "API_ERROR"), str(error.get("Message", "Ошибка API")).replace(self._token, "[REDACTED]"), retryable=bool(error.get("IsRetryable")))
+            with self.open(method, path, payload, operation_id=operation_id) as response:
+                opened = True
+                raw = response.read(self.max_json_bytes + 1)
+            if len(raw) > self.max_json_bytes:
+                raise BimBridgeError("RESULT_TOO_LARGE", "Используйте Task.download() для большого результата")
+            if raw.startswith(b"\x1f\x8b"):
+                try:
+                    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as zipped:
+                        raw = zipped.read(self.max_json_bytes + 1)
+                except (OSError, EOFError):
+                    raise BimBridgeError("INVALID_RESPONSE", "Повреждённый gzip JSON") from None
+                if len(raw) > self.max_json_bytes:
+                    raise BimBridgeError("RESULT_TOO_LARGE", "Распакованный JSON превышает лимит клиента")
+            try:
+                result = json.loads(raw.decode("utf-8-sig")) if raw else {}
+            except (ValueError, UnicodeError):
+                raise BimBridgeError("INVALID_RESPONSE", "Ожидался JSON. Для файла используйте download()") from None
+            if isinstance(result, dict) and result.get("Error"):
+                error = result["Error"]
+                raise BimBridgeError(error.get("Code", "API_ERROR"), str(error.get("Message", "Ошибка API")).replace(self._token, "[REDACTED]"), retryable=bool(error.get("IsRetryable")))
+        except BimBridgeError as error:
+            journal = getattr(self, 'journal', None)
+            if opened and journal:
+                journal(dict(EventType='response_validation', OperationId=operation_id,
+                             Operation=method + ' ' + path, Success=False,
+                             ErrorCode=error.code, Retryable=error.retryable,
+                             ClientRequestId=payload.get('clientRequestId') if isinstance(payload, dict) else None))
+            raise
         return result
 
     def rpc(self, method, **arguments):

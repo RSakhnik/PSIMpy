@@ -24,7 +24,14 @@ def _state(path, value):
             json.dump(value, stream, sort_keys=True)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        for attempt in range(6):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if os.name != 'nt' or attempt == 5:
+                    raise
+                time.sleep(.02 * (attempt + 1))
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

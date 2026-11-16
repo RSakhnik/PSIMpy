@@ -1,6 +1,10 @@
 import copy
+import json
+import types
+import tempfile
 import unittest
-from bim_bridge import BimBridgeError, IncompleteResult, iter_search_elements, iter_search_pages
+from pathlib import Path
+from bim_bridge import BimBridgeError, IncompleteResult, iter_search_elements, iter_search_pages, iter_search_complete
 from spatial_support import MODEL, PART, V1, V2, elements
 
 
@@ -45,3 +49,98 @@ class PagingTests(unittest.TestCase):
         with self.assertRaises(BimBridgeError) as caught:list(iter_search_pages(client,MODEL,[PART]))
         self.assertEqual(caught.exception.code,'CAPABILITY_NOT_AVAILABLE')
         with self.assertRaises(IncompleteResult):list(iter_search_pages(PageClient(),MODEL,[PART],max_pages=1))
+
+    def test_complete_search_restarts_expired_cursor_without_duplicate_ids(self):
+        client=PageClient();expired=[False]
+        events=[];client._http=types.SimpleNamespace(journal=events.append)
+        original=client.run
+        def run(operation,payload,**options):
+            if payload.get('Cursor')=='opaque-1' and not expired[0]:
+                expired[0]=True
+                raise BimBridgeError('CURSOR_EXPIRED','expired')
+            return original(operation,payload,**options)
+        client.run=run
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'search.json'
+            rows=list(iter_search_complete(client,MODEL,[PART],page_size=2,state_path=path))
+            self.assertEqual(len(rows),5)
+            self.assertEqual(len({(r['ModelPartId'],r['ElementId']) for r in rows}),5)
+            self.assertEqual(list(iter_search_complete(client,MODEL,[PART],page_size=2,state_path=path)),[])
+            self.assertEqual(json.loads(path.read_text())['Status'],'completed')
+            self.assertEqual(json.loads(path.read_text())['ReprocessedElements'],2)
+            self.assertIn('cursor_expired',[event['EventType'] for event in events])
+            self.assertIn('completed',[event['EventType'] for event in events])
+
+    def test_complete_search_detects_changed_version_on_restart(self):
+        client=PageClient();original=client.run
+        def run(operation,payload,**options):
+            if payload.get('Cursor')=='opaque-1':
+                client.version=V2
+                raise BimBridgeError('CURSOR_EXPIRED','expired')
+            return original(operation,payload,**options)
+        client.run=run
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(BimBridgeError) as caught:
+                list(iter_search_complete(client,MODEL,[PART],page_size=2,
+                                          state_path=Path(directory)/'search.json'))
+            self.assertEqual(caught.exception.code,'MODEL_CHANGED')
+            self.assertEqual(json.loads((Path(directory)/'search.json').read_text())['Status'],'model_changed')
+
+    def test_complete_search_resumes_mid_page(self):
+        client=PageClient()
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'search.json'
+            iterator=iter_search_complete(client,MODEL,[PART],page_size=2,state_path=path)
+            first=next(iterator)
+            second=next(iterator)
+            iterator.close()
+            self.assertEqual(json.loads(path.read_text())['Status'],'interrupted')
+            remaining=list(iter_search_complete(client,MODEL,[PART],page_size=2,state_path=path))
+            self.assertEqual(len(remaining),4)
+            self.assertEqual(remaining[0]['ElementId'],second['ElementId'])
+            self.assertEqual(len({r['ElementId'] for r in [first]+remaining}),5)
+
+    def test_complete_search_budget_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'search.json'
+            with self.assertRaises(IncompleteResult):
+                list(iter_search_complete(PageClient(),MODEL,[PART],page_size=2,
+                                          state_path=path,max_pages=1))
+            self.assertEqual(json.loads(path.read_text())['Status'],'budget_exhausted')
+
+    def test_complete_search_rejects_bad_page_before_yielding_any_row(self):
+        client = PageClient()
+        client.transform = lambda page: dict(page, Elements=[page['Elements'][0]] * 2)
+        with tempfile.TemporaryDirectory() as directory:
+            iterator = iter_search_complete(client, MODEL, [PART], page_size=2,
+                                            state_path=Path(directory) / 'duplicate.json')
+            with self.assertRaises(IncompleteResult):
+                next(iterator)
+
+        client = PageClient()
+        def overlap(page):
+            if client.calls[-1][0].get('Cursor') == 'opaque-1':
+                return dict(page, Elements=[page['Elements'][0], elements(5)[0]])
+            return page
+        client.transform = overlap
+        with tempfile.TemporaryDirectory() as directory:
+            iterator = iter_search_complete(client, MODEL, [PART], page_size=2,
+                                            state_path=Path(directory) / 'overlap.json')
+            self.assertEqual(next(iterator)['ElementId'], elements(5)[0]['ElementId'])
+            self.assertEqual(next(iterator)['ElementId'], elements(5)[1]['ElementId'])
+            with self.assertRaises(IncompleteResult):
+                next(iterator)
+    def test_complete_search_state_binds_connection_and_options(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'search.json'
+            first=PageClient()
+            first._http=types.SimpleNamespace(base_url='https://bridge-a',_token='secret-a')
+            list(iter_search_complete(first,MODEL,[PART],page_size=2,state_path=path))
+            changed=PageClient()
+            changed._http=types.SimpleNamespace(base_url='https://bridge-b',_token='secret-a')
+            with self.assertRaises(ValueError):
+                list(iter_search_complete(changed,MODEL,[PART],page_size=2,state_path=path))
+            with self.assertRaises(ValueError):
+                list(iter_search_complete(first,MODEL,[PART],page_size=2,state_path=path,
+                                          priority=3))
+            self.assertNotIn('secret-a',path.read_text())
