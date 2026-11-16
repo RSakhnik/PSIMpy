@@ -11,4 +11,5 @@ dist/
 secrets/
 outputs/
 checkpoints/
+.test-runtime/
 live-test-report.json

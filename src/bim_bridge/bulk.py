@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import time
 import uuid
 import warnings
 from .errors import BimBridgeError, IncompleteResult
@@ -19,7 +20,14 @@ def _atomic_json(path, value):
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(value, stream, ensure_ascii=False)
             stream.flush(); os.fsync(stream.fileno())
-        os.replace(temp, path)
+        for attempt in range(6):
+            try:
+                os.replace(temp, path)
+                break
+            except PermissionError:
+                if os.name != 'nt' or attempt == 5:
+                    raise
+                time.sleep(.02 * (attempt + 1))
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
