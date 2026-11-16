@@ -117,7 +117,9 @@ class Transport:
                             Success=False, ErrorCode='TRANSPORT_ERROR',
                             HttpStatus=None, Retryable=True), began)
                 if attempt + 1 == attempts:
-                    raise BimBridgeError("TRANSPORT_ERROR", "Соединение с BIM Bridge не выполнено", retryable=True) from None
+                    raise BimBridgeError("TRANSPORT_ERROR", "Соединение с BIM Bridge не выполнено",
+                                         retryable=True,
+                                         failure_kind='ambiguous' if method == 'POST' else 'temporary') from None
             time.sleep(delay)
 
     def json(self, method, path, payload=None):

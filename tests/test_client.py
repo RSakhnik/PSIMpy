@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 from bim_bridge import BimBridge, Condition, Element, FileReference, BimBridgeError, TaskFailed, TaskTimeout
@@ -124,6 +125,13 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(task.id,ID)
         self.assertEqual(attempts,[task.client_request_id]*2)
         self.assertEqual(accepted,[task.client_request_id])
+    def test_transport_failure_kind_depends_on_request_method(self):
+        with patch.object(self.client._http._opener,'open',side_effect=urllib.error.URLError('offline')):
+            for method, kind in [('GET','temporary'),('POST','ambiguous')]:
+                with self.assertRaises(BimBridgeError) as caught:
+                    self.client._http.json(method,'/health',{} if method=='POST' else None)
+                self.assertEqual(caught.exception.failure_kind,kind)
+                self.assertIsNone(caught.exception.status_code)
     def test_get_retry_and_redirect_block(self):
         type(self).handler=staticmethod(lambda *a:(503,{}, {}) if len(self.calls)==1 else (200,{}, {'Ready':True}))
         self.client._http.retries=1

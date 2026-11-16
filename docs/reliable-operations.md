@@ -29,6 +29,8 @@ responses only; it has not been exercised against a production BIM model.
   and body and a finite `submit_retries` budget. It never changes IDs during
   that recovery. Once Manager retention expires, the client cannot prove that
   an older task once existed. Direct Pilot transport retains its prior policy.
+  `BimBridgeError.failure_kind` marks that POST transport outcome as
+  `ambiguous`; it does not attribute the cause to a particular worker.
 * An expired cursor cannot be resumed in place. Search restarts from page one
   at the pinned version, with a bounded restart and page budget. The caller
   may receive the last yielded element again after interruption; output sinks
