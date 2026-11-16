@@ -493,3 +493,14 @@ Scope, счётчики и BoundsMinX/Y/Z, BoundsMaxX/Y/Z, BoundsCenterX/Y/Z.
 Implementation report and synthetic results: [parallel-implementation-report.md](docs/parallel-implementation-report.md), [parallel-scaling.json](docs/parallel-scaling.json).
 
 0.3.1 additionally recovers the empty-partial/initial-journal crash window and atomically publishes owned shard paths on mounted filesystems without hard links. A real Python process crash/restart test verifies READY-file reuse and no duplicate SDK assignments.
+# HTTP retry policy
+
+For the REST connection, `BimBridge(..., http_timeout=60, retries=2,
+retry_base=1.0, retry_cap=5.0, retry_jitter=0.2)` controls bounded GET
+retries. Delays use exponential backoff with jitter and are recorded per
+attempt by the transport telemetry hook. POST submission is deliberately not
+repeated after an ambiguous transport failure; retain the reported
+`client_request_id` and reconcile the task with the Manager before submitting
+again. The client cannot infer from `TRANSPORT_ERROR` whether the Manager
+accepted a request.
+

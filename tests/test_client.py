@@ -110,6 +110,16 @@ class ClientTests(unittest.TestCase):
         type(self).handler=staticmethod(lambda *a:(302,{'Location':self.url+'/elsewhere'},b''))
         with self.assertRaises(BimBridgeError):self.client.health()
         self.assertEqual(len(self.calls),1)
+    def test_configurable_retry_delay_and_attempt_events(self):
+        type(self).handler=staticmethod(lambda *a:(503,{}, {}) if len(self.calls)==1 else (200,{}, {'Ready':True}))
+        client=BimBridge(self.url,token='test-secret',retries=1,retry_base=.25,retry_cap=.25,retry_jitter=0)
+        events=[];client._http.telemetry=events.append
+        with patch('bim_bridge.transport.time.sleep') as sleep:
+            self.assertTrue(client.health()['Ready'])
+        sleep.assert_called_once_with(.25)
+        self.assertEqual([e['Success'] for e in events],[False,True])
+        self.assertEqual(events[0]['RetryWaitMs'],250)
+        self.assertEqual(client._http.fork().retry_base,.25)
     def test_gzip_magic_and_limit(self):
         zipped=gzip.compress(json.dumps({'x':'я'*100}).encode())
         type(self).handler=staticmethod(lambda *a:(200,{},zipped))

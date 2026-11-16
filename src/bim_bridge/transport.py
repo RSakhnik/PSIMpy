@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import random
 import tempfile
 import time
 import urllib.error
@@ -18,7 +19,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 class Transport:
-    def __init__(self, base_url, token, *, timeout=60, retries=2, auth="token", max_json_bytes=128*1024*1024):
+    def __init__(self, base_url, token, *, timeout=60, retries=2, auth="token", max_json_bytes=128*1024*1024,
+                 retry_base=1.0, retry_cap=5.0, retry_jitter=0.2):
         url = urllib.parse.urlsplit(base_url)
         if url.scheme not in ("https", "http") or not url.netloc or url.username or url.password or url.query or url.fragment:
             raise ValueError("base_url должен быть HTTP(S) URL без учётных данных, query и fragment")
@@ -26,10 +28,13 @@ class Transport:
             raise ValueError("Нужен непустой API-токен без переводов строк")
         if timeout <= 0 or retries < 0 or max_json_bytes <= 0:
             raise ValueError("Некорректные лимиты HTTP")
+        if retry_base <= 0 or retry_cap <= 0 or not 0 <= retry_jitter <= 1:
+            raise ValueError("Некорректная политика повторов")
         if auth not in ("token", "bearer"):
             raise ValueError("auth: token или bearer")
         self.base_url, self._token = base_url.rstrip("/"), token
         self.timeout, self.retries, self.max_json_bytes = timeout, retries, max_json_bytes
+        self.retry_base, self.retry_cap, self.retry_jitter = retry_base, retry_cap, retry_jitter
         self.max_chunk_bytes = 4 * 1024 * 1024
         self._headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
         self._headers["X-Api-Token" if auth == "token" else "Authorization"] = token if auth == "token" else "Bearer " + token
@@ -37,7 +42,12 @@ class Transport:
 
     def fork(self):
         return type(self)(self.base_url,self._token,timeout=self.timeout,retries=self.retries,
-                          auth='token' if 'X-Api-Token' in self._headers else 'bearer',max_json_bytes=self.max_json_bytes)
+                          auth='token' if 'X-Api-Token' in self._headers else 'bearer',max_json_bytes=self.max_json_bytes,
+                          retry_base=self.retry_base,retry_cap=self.retry_cap,retry_jitter=self.retry_jitter)
+
+    def _retry_delay(self, attempt):
+        base = min(self.retry_cap, self.retry_base * 2 ** attempt)
+        return base * random.uniform(1 - self.retry_jitter, 1 + self.retry_jitter)
 
     def _error(self, response, status):
         try:
@@ -61,6 +71,7 @@ class Transport:
         for attempt in range(attempts):
             started = time.perf_counter_ns()
             error_code = None
+            delay = self._retry_delay(attempt) if attempt + 1 < attempts else 0
             try:
                 result = self._opener.open(urllib.request.Request(self.base_url + path, data, headers, method=method), timeout=self.timeout)
                 recorder = getattr(self, 'telemetry', None)
@@ -74,18 +85,18 @@ class Transport:
                 retry = exc.code in (429, 502, 503, 504) and attempt + 1 < attempts
                 recorder = getattr(self, 'telemetry', None)
                 if recorder: recorder(dict(Attempt=attempt+1, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
-                                           RetryWaitMs=min(2 ** attempt, 5)*1000 if retry else 0,
+                                           RetryWaitMs=delay*1000 if retry else 0,
                                            Success=False, ErrorCode=error_code))
                 if exc.code not in (429, 502, 503, 504) or attempt + 1 == attempts:
                     raise error from None
             except (urllib.error.URLError, TimeoutError, OSError):
                 recorder = getattr(self, 'telemetry', None)
                 if recorder: recorder(dict(Attempt=attempt+1, NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
-                                           RetryWaitMs=min(2 ** attempt, 5)*1000 if attempt+1<attempts else 0,
+                                           RetryWaitMs=delay*1000,
                                            Success=False, ErrorCode='TRANSPORT_ERROR'))
                 if attempt + 1 == attempts:
                     raise BimBridgeError("TRANSPORT_ERROR", "Соединение с BIM Bridge не выполнено", retryable=True) from None
-            time.sleep(min(2 ** attempt, 5))
+            time.sleep(delay)
 
     def json(self, method, path, payload=None):
         with self.open(method, path, payload) as response:

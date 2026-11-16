@@ -95,14 +95,17 @@ class BimBridge:
 
     def __init__(self, base_url="https://360pilot.ru/bim-bridge", *, token=None,
                  token_file=None, task_timeout=1800, poll_interval=2, http_timeout=60,
-                 retries=2, auth="token", max_json_bytes=128*1024*1024):
+                 retries=2, auth="token", max_json_bytes=128*1024*1024,
+                 retry_base=1.0, retry_cap=5.0, retry_jitter=0.2):
         if token is not None and token_file is not None:
             raise ValueError("Задайте token или token_file, не оба")
         if token_file is not None:
             token = Path(token_file).read_text(encoding="utf-8-sig").strip()
         if task_timeout <= 0 or poll_interval <= 0:
             raise ValueError("Таймаут и интервал должны быть положительными")
-        self._http = Transport(base_url, token, timeout=http_timeout, retries=retries, auth=auth, max_json_bytes=max_json_bytes)
+        self._http = Transport(base_url, token, timeout=http_timeout, retries=retries, auth=auth,
+                               max_json_bytes=max_json_bytes, retry_base=retry_base,
+                               retry_cap=retry_cap, retry_jitter=retry_jitter)
         self.task_timeout, self.poll_interval = task_timeout, poll_interval
     def health(self):
         return self._http.json("GET", "/health")
