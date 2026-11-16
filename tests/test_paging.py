@@ -107,6 +107,29 @@ class PagingTests(unittest.TestCase):
                 list(iter_search_complete(PageClient(),MODEL,[PART],page_size=2,
                                           state_path=path,max_pages=1))
             self.assertEqual(json.loads(path.read_text())['Status'],'budget_exhausted')
+
+    def test_complete_search_rejects_bad_page_before_yielding_any_row(self):
+        client = PageClient()
+        client.transform = lambda page: dict(page, Elements=[page['Elements'][0]] * 2)
+        with tempfile.TemporaryDirectory() as directory:
+            iterator = iter_search_complete(client, MODEL, [PART], page_size=2,
+                                            state_path=Path(directory) / 'duplicate.json')
+            with self.assertRaises(IncompleteResult):
+                next(iterator)
+
+        client = PageClient()
+        def overlap(page):
+            if client.calls[-1][0].get('Cursor') == 'opaque-1':
+                return dict(page, Elements=[page['Elements'][0], elements(5)[0]])
+            return page
+        client.transform = overlap
+        with tempfile.TemporaryDirectory() as directory:
+            iterator = iter_search_complete(client, MODEL, [PART], page_size=2,
+                                            state_path=Path(directory) / 'overlap.json')
+            self.assertEqual(next(iterator)['ElementId'], elements(5)[0]['ElementId'])
+            self.assertEqual(next(iterator)['ElementId'], elements(5)[1]['ElementId'])
+            with self.assertRaises(IncompleteResult):
+                next(iterator)
     def test_complete_search_state_binds_connection_and_options(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'search.json'

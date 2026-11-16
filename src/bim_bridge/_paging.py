@@ -135,19 +135,27 @@ def iter_search_complete(client, model_key, part_ids=None, *, conditions=(),
                      RecoveryReason='worker_changed')
             state.pop('PreviousWorkerInstanceId', None)
             state['ModelVersionUtc'] = version
-            replay = state.get('PendingCursor') == cursor and state.get('Pending', False)
-            state.update(PendingCursor=cursor, Pending=True)
-            _atomic_json(path, state)
+            keys = []
             local = set()
-            reprocessed_page = 0
             for element in page['Elements']:
-                key = (guid(element['ModelPartId']), guid(element['ElementId']))
+                try:
+                    key = (guid(element['ModelPartId']), guid(element['ElementId']))
+                except (KeyError, TypeError, ValueError) as error:
+                    raise IncompleteResult('Search page contains an invalid composite ID', page) from error
                 if key in local:
                     raise IncompleteResult('Search page contains duplicate IDs', page)
                 local.add(key)
+                keys.append(key)
+            replay = state.get('PendingCursor') == cursor and state.get('Pending', False)
+            if state['Restarts'] == 0 and not replay and any(
+                    database.execute('SELECT 1 FROM ids WHERE part=? AND element=?', key).fetchone()
+                    for key in keys):
+                raise IncompleteResult('Search pages overlap', page)
+            state.update(PendingCursor=cursor, Pending=True)
+            _atomic_json(path, state)
+            reprocessed_page = 0
+            for element, key in zip(page['Elements'], keys):
                 if database.execute('SELECT 1 FROM ids WHERE part=? AND element=?', key).fetchone():
-                    if state['Restarts'] == 0 and not replay:
-                        raise IncompleteResult('Search pages overlap', page)
                     reprocessed_page += 1
                     continue
                 yield dict(element, ModelVersionUtc=version, SnapshotVerified=True)
