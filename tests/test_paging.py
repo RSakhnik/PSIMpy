@@ -1,4 +1,5 @@
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,6 +64,7 @@ class PagingTests(unittest.TestCase):
             self.assertEqual(len(rows),5)
             self.assertEqual(len({(r['ModelPartId'],r['ElementId']) for r in rows}),5)
             self.assertEqual(list(iter_search_complete(client,MODEL,[PART],page_size=2,state_path=path)),[])
+            self.assertEqual(json.loads(path.read_text())['Status'],'completed')
 
     def test_complete_search_detects_changed_version_on_restart(self):
         client=PageClient();original=client.run
@@ -77,6 +79,7 @@ class PagingTests(unittest.TestCase):
                 list(iter_search_complete(client,MODEL,[PART],page_size=2,
                                           state_path=Path(directory)/'search.json'))
             self.assertEqual(caught.exception.code,'MODEL_CHANGED')
+            self.assertEqual(json.loads((Path(directory)/'search.json').read_text())['Status'],'model_changed')
 
     def test_complete_search_resumes_mid_page(self):
         client=PageClient()
@@ -86,7 +89,16 @@ class PagingTests(unittest.TestCase):
             first=next(iterator)
             second=next(iterator)
             iterator.close()
+            self.assertEqual(json.loads(path.read_text())['Status'],'interrupted')
             remaining=list(iter_search_complete(client,MODEL,[PART],page_size=2,state_path=path))
             self.assertEqual(len(remaining),4)
             self.assertEqual(remaining[0]['ElementId'],second['ElementId'])
             self.assertEqual(len({r['ElementId'] for r in [first]+remaining}),5)
+
+    def test_complete_search_budget_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'search.json'
+            with self.assertRaises(IncompleteResult):
+                list(iter_search_complete(PageClient(),MODEL,[PART],page_size=2,
+                                          state_path=path,max_pages=1))
+            self.assertEqual(json.loads(path.read_text())['Status'],'budget_exhausted')

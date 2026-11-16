@@ -72,7 +72,7 @@ def iter_search_complete(client, model_key, part_ids=None, *, conditions=(),
     else:
         state = {'Identity': identity, 'ModelVersionUtc': None, 'Cursor': None,
                  'CursorWorkerInstanceId': None, 'PendingCursor': None,
-                 'Pages': 0, 'Restarts': 0, 'Complete': False}
+                 'Pages': 0, 'Restarts': 0, 'Complete': False, 'Status': 'running'}
         _atomic_json(path, state)
     ledger_path = Path(str(path) + '.ids.sqlite')
     if (state['Pages'] or state.get('Pending')) and not ledger_path.exists():
@@ -90,6 +90,8 @@ def iter_search_complete(client, model_key, part_ids=None, *, conditions=(),
             database.commit()
         if state['Complete']:
             return
+        state['Status'] = 'running'
+        _atomic_json(path, state)
         while state['Pages'] < max_pages:
             cursor = state['Cursor']
             try:
@@ -128,10 +130,25 @@ def iter_search_complete(client, model_key, part_ids=None, *, conditions=(),
                 database.commit()
             state.update(Pages=state['Pages']+1, Cursor=page.get('NextCursor'),
                          CursorWorkerInstanceId=page.get('CursorWorkerInstanceId') if page['HasMore'] else None,
-                         Pending=False, Complete=not page['HasMore'])
+                         Pending=False, Complete=not page['HasMore'],
+                         Status='completed' if not page['HasMore'] else 'running')
             _atomic_json(path, state)
             if state['Complete']:
                 return
         raise IncompleteResult('Search page budget exhausted', state)
+    except (GeneratorExit, KeyboardInterrupt):
+        state['Status'] = 'interrupted'
+        _atomic_json(path, state)
+        raise
+    except IncompleteResult as error:
+        state['Status'] = ('budget_exhausted' if 'budget' in error.message.lower()
+                           else 'error')
+        _atomic_json(path, state)
+        raise
+    except BimBridgeError as error:
+        state['Status'] = 'model_changed' if error.code == 'MODEL_CHANGED' else 'error'
+        state['ErrorCode'] = error.code
+        _atomic_json(path, state)
+        raise
     finally:
         database.close()
