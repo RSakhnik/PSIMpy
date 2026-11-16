@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 import uuid
@@ -17,6 +18,32 @@ def item(i, name):
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_interrupted_loading_resumes_without_reloading_verified_group(self):
+        items = [item(10, 'Pipe 1'), item(11, 'Valve 1')]
+        calls = []
+        interrupted = [True]
+        def search(*args, **kwargs):
+            yield from items
+        def properties(client, model, elements, **options):
+            calls.append(elements[0]['ElementId'])
+            if elements[0]['ElementId'] == items[1]['ElementId'] and interrupted[0]:
+                interrupted[0] = False
+                raise KeyboardInterrupt()
+            yield {'Elements': [dict(elements[0], PropertySets=[])],
+                   'ModelVersionUtc': VERSION}
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'bim_bridge.schema_discovery.iter_search_complete', side_effect=search), patch(
+                'bim_bridge.schema_discovery.iter_properties', side_effect=properties):
+            path = Path(directory) / 'schemas.json'
+            with self.assertRaises(KeyboardInterrupt):
+                discover_property_schemas(object(), MODEL, [PART], path)
+            self.assertEqual(json.loads(path.read_text())['Status'], 'interrupted')
+            report = discover_property_schemas(object(), MODEL, [PART], path)
+            self.assertEqual(report['Status'], 'search_exhausted')
+            self.assertEqual(report['Loaded'], 2)
+            self.assertEqual(calls.count(items[0]['ElementId']), 1)
+            self.assertEqual(calls.count(items[1]['ElementId']), 2)
+
     def test_budget_resume_and_stable_sample_are_distinct(self):
         items = [item(10,'Pipe 1'), item(11,'Pipe 2'), item(12,'Valve 1')]
         def search(*args, **kwargs):

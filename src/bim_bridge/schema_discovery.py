@@ -7,7 +7,7 @@ import time
 
 from ._paging import iter_search_complete
 from .bulk import _atomic_json, iter_properties
-from .errors import IncompleteResult
+from .errors import BimBridgeError, IncompleteResult
 from .types import Condition, guid
 
 
@@ -91,8 +91,20 @@ def discover_property_schemas(client, model_key, part_ids, state_path, *,
             reason = 'search_exhausted'
     except IncompleteResult as error:
         if 'budget' not in error.message.lower() and 'max_pages' not in error.message.lower():
+            state['Status'] = 'error'
+            state['ErrorCode'] = error.code
+            _atomic_json(path, state)
             raise
         reason = 'page_budget'
+    except KeyboardInterrupt:
+        state['Status'] = 'interrupted'
+        _atomic_json(path, state)
+        raise
+    except BimBridgeError as error:
+        state['Status'] = 'model_changed' if error.code == 'MODEL_CHANGED' else 'error'
+        state['ErrorCode'] = error.code
+        _atomic_json(path, state)
+        raise
     state['Status'] = reason
     state['CompleteInventory'] = reason == 'search_exhausted' and state['Loaded'] == state['Searched']
     state['Coverage'] = {'SearchedElements': state['Searched'],
