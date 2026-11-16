@@ -93,6 +93,25 @@ class BulkTests(unittest.TestCase):
             self.assertEqual(cp.run('echo',{}),{'ok':True})
             self.assertEqual(client.posts,1)
 
+    def test_incomplete_batches_never_enter_checkpoint_cache(self):
+        element={'ModelPartId':PART,'ElementId':MODEL}
+        for operation, response in (
+                ('load-element-properties', {'Elements':[], 'Warnings':['missing']}),
+                ('load-element-properties', {'Elements':[element,element]}),
+                ('load-element-properties', {'Elements':[{'ModelPartId':PART,'ElementId':str(uuid.UUID(int=3))}]}),
+                ('get-element-relations', {'Elements':[{'Element':element,'ChildrenTruncated':True}]})):
+            client=FakeClient()
+            client.run=lambda *args, response=response, **kwargs: response
+            with tempfile.TemporaryDirectory() as tmp:
+                cp=Checkpoints(client,tmp)
+                cp.run(operation,{'ElementIds':[element]})
+                self.assertEqual(list(cp.directory.glob('*.result.json')),[])
+                with self.assertRaises(IncompleteResult):
+                    if operation=='load-element-properties':
+                        list(iter_properties(client,MODEL,[element],checkpoints=cp))
+                    else:
+                        list(iter_relations(client,MODEL,[element],checkpoints=cp))
+
     def test_missing_global_id_and_single_relation_truncation_fail(self):
         client=FakeClient()
         client.run=lambda *a,**kw:{'Elements':[], 'Truncated':True}
