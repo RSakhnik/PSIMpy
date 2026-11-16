@@ -1,4 +1,9 @@
+import gzip
+import hashlib
+import json
 import tempfile
+import threading
+import types
 import unittest
 import uuid
 from pathlib import Path
@@ -25,7 +30,71 @@ class Artifact:
         yield {'Type': 'manifest', 'ModelVersionUtc': self.version}
 
 
+class FakeManager:
+    def __init__(self):
+        self._http=types.SimpleNamespace(base_url='pilot://fake',_token='fake')
+        self.jobs={};self.requests={};self.submits=0;self.fail_once=True
+        self.lock=threading.Lock()
+
+    def _parallel_fork(self):
+        return self
+
+    def supports(self,*args,**kwargs):
+        return True
+
+    def health(self):
+        return {'Capabilities':['artifact-upload-v2']}
+
+    def submit(self,operation,payload,**options):
+        request_id=options['client_request_id']
+        with self.lock:
+            if request_id not in self.requests:
+                task_id=str(uuid.uuid4())
+                self.requests[request_id]=task_id
+                self.jobs[task_id]=payload
+                self.submits+=1
+            return self.task(self.requests[request_id])
+
+    def task(self,task_id):
+        manager=self
+        class Task:
+            id=task_id
+            def wait(self,**options):
+                if (manager.fail_once and
+                        manager.jobs[task_id]['ElementIds'][0]['ElementId']==element(2)['ElementId']):
+                    manager.fail_once=False
+                    raise BimBridgeError('TRANSPORT_ERROR','interrupted',retryable=True)
+                return {'State':'COMPLETED'}
+            def metadata(self):
+                data=self._data()
+                return {'TotalLength':len(data),'Sha256':hashlib.sha256(data).hexdigest()}
+            def _data(self):
+                rows=[{'Type':'manifest','Format':'bim-elements','FormatVersion':1,
+                       'ModelVersionUtc':VERSION}]
+                rows.extend(dict(Type='element',**item,PropertySets=[]) for item in
+                            manager.jobs[task_id]['ElementIds'])
+                rows.append({'Type':'summary','ModelVersionUtc':VERSION,
+                             'SelectedCount':len(rows)-1,'ExportedCount':len(rows)-1,
+                             'FailedCount':0,'Complete':True})
+                return gzip.compress(('\n'.join(json.dumps(row) for row in rows)+'\n').encode(),mtime=0)
+            def download(self,destination,**options):
+                Path(destination).write_bytes(self._data())
+        return Task()
+
+
 class ParallelPropertiesTests(unittest.TestCase):
+    def test_fake_manager_resumes_same_task_and_reuses_artifacts(self):
+        client=FakeManager()
+        with tempfile.TemporaryDirectory() as directory:
+            args=(client,MODEL,[element(1),element(2),element(3)],directory)
+            first=list(iter_properties_parallel(*args,batch_size=1,concurrency=2,
+                                                model_version_utc=VERSION))
+            self.assertEqual(sum(len(batch['Elements']) for batch in first),3)
+            self.assertEqual(client.submits,3)
+            second=list(iter_properties_parallel(*args,batch_size=1,concurrency=2,
+                                                 model_version_utc=VERSION))
+            self.assertEqual(len(second),3)
+            self.assertEqual(client.submits,3)
     def test_batches_selection_and_progress(self):
         calls = []
         def export(client, model, destination, **options):
