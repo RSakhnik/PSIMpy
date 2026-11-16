@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from .bulk import _atomic_json
-from .errors import IncompleteResult
+from .errors import BimBridgeError, IncompleteResult
 from .exports import export_elements
 from .parallel import _pin
 from .types import element_payload, guid, utc
@@ -17,7 +17,7 @@ def _key(row):
 
 def iter_properties_parallel(client, model_key, element_ids, directory, *,
                              property_names=None, batch_size=500, concurrency=4,
-                             model_version_utc=None, progress=None):
+                             model_version_utc=None, progress=None, max_batch_retries=2):
     """Yield verified batches; completed artifacts survive interruption.
 
     Each batch is an independent server export task. The Manager chooses an
@@ -25,6 +25,8 @@ def iter_properties_parallel(client, model_key, element_ids, directory, *,
     """
     if type(batch_size) is not int or batch_size <= 0 or type(concurrency) is not int or concurrency <= 0:
         raise ValueError('batch_size and concurrency must be positive integers')
+    if type(max_batch_retries) is not int or max_batch_retries < 0:
+        raise ValueError('max_batch_retries must be a nonnegative integer')
     model_key = guid(model_key)
     elements = [element_payload(e) for e in element_ids]
     keys = [_key(e) for e in elements]
@@ -50,20 +52,31 @@ def iter_properties_parallel(client, model_key, element_ids, directory, *,
         batch = batches[index]
         worker_client = client._parallel_fork() if hasattr(client, '_parallel_fork') else client
         try:
-            artifact = export_elements(worker_client, model_key, directory / f'batch-{index:08d}.ndjson.gz',
-                                       element_ids=batch, property_names=property_names,
-                                       model_version_utc=version)
-            if utc(next(artifact.records()).get('ModelVersionUtc')) != version:
-                raise IncompleteResult('Property artifact belongs to another model version',
-                                       {'BatchIndex': index})
-            rows = list(artifact.iter_elements(strict=True))
-            actual = [_key(row) for row in rows]
-            expected = [_key(row) for row in batch]
-            if len(actual) != len(set(actual)) or set(actual) != set(expected):
-                raise IncompleteResult('Property artifact contains missing, duplicate or foreign IDs',
-                                       {'BatchIndex': index, 'Expected': expected, 'Actual': actual})
-            return index, {'Elements': rows, 'ModelVersionUtc': version,
-                           'SnapshotVerified': True, 'BatchIndex': index}
+            for attempt in range(max_batch_retries + 1):
+                artifact = export_elements(worker_client, model_key,
+                    directory / f'batch-{index:08d}-attempt-{attempt}.ndjson.gz',
+                    element_ids=batch, property_names=property_names,
+                    model_version_utc=version)
+                try:
+                    records = artifact.records()
+                    manifest = next(records, None)
+                    if manifest and manifest.get('ModelVersionUtc') and utc(manifest['ModelVersionUtc']) != version:
+                        raise BimBridgeError('MODEL_CHANGED', 'Property artifact belongs to another model version')
+                    if not manifest or not manifest.get('ModelVersionUtc'):
+                        raise IncompleteResult('Property artifact does not confirm model version',
+                                               {'BatchIndex': index, 'Attempt': attempt})
+                    rows = list(artifact.iter_elements(strict=True))
+                    actual = [_key(row) for row in rows]
+                    expected = [_key(row) for row in batch]
+                    if len(actual) != len(set(actual)) or set(actual) != set(expected):
+                        raise IncompleteResult('Property artifact contains missing, duplicate or foreign IDs',
+                                               {'BatchIndex': index, 'Expected': expected, 'Actual': actual})
+                except IncompleteResult:
+                    if attempt == max_batch_retries:
+                        raise
+                    continue
+                return index, {'Elements': rows, 'ModelVersionUtc': version,
+                               'SnapshotVerified': True, 'BatchIndex': index}
         finally:
             if worker_client is not client:
                 worker_client.close()
