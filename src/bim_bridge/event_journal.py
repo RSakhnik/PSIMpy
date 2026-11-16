@@ -11,7 +11,7 @@ _FIELDS = frozenset(('SessionId', 'OperationId', 'TaskId', 'ClientRequestId',
     'Operation', 'ModelKey', 'ModelVersionUtc', 'WorkerInstanceId', 'BatchId',
     'StartTime', 'EndTime', 'NetworkWallMs', 'RetryWaitMs', 'Attempt',
     'RetryCount', 'Success', 'ErrorCode', 'HttpStatus', 'Retryable',
-    'PayloadBytes', 'ResultBytes', 'RecoveryReason', 'RecoveryStrategy',
+    'PayloadBytes', 'ResultBytes', 'ElementCount', 'RecoveryReason', 'RecoveryStrategy',
     'ReprocessedElements', 'LostWork'))
 
 

@@ -42,7 +42,9 @@ responses only; it has not been exercised against a production BIM model.
   filesystems; validate that storage before using it for critical exports.
 * `EventJournal` records REST transport attempts, including failures before a
   successful retry. Pilot direct transport and every worker/Manager lifecycle
-  transition are not yet represented in this journal. Existing
+  transition are not yet represented in this journal. `SessionProfile` reports
+  overlapping network intervals without adding them into wall time, and
+  leaves unavailable worker/queue metrics as unknown. Existing
   `ParallelExport` manifests and `ExportProfile` retain their own richer
   shard telemetry.
 * Schema sampling can stop because the search was exhausted, a budget was

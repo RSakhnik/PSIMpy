@@ -594,6 +594,19 @@ request/task IDs when available, timing, HTTP status, error code and retry
 delay. Only a fixed set of fields is written; credentials and request bodies
 are excluded. A new process may append to the same file with a new session ID.
 
+```python
+from bim_bridge import SessionProfile
+
+profile = SessionProfile.from_jsonl("/content/drive/MyDrive/psimpy-events.jsonl")
+print(profile.rows())
+profile.save_json("/content/drive/MyDrive/psimpy-profile.json")
+```
+
+The session profile reports wall time, the union of overlapping network
+intervals, summed per-request time, retry delays, error counts and recovery
+rates. Worker processing and queue metrics remain unknown in this REST-only
+profile; use `ExportProfile` for measured parallel artifact stages.
+
 ## Stream property batches to CSV
 
 ```python
