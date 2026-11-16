@@ -606,3 +606,6 @@ write_properties_csv(
 The long-form CSV includes composite IDs, model version, category, property
 name, type, unit and value. It also retains an ID row for an element without
 properties. A failed batch leaves no completed CSV file.
+
+See [recovery boundaries](docs/reliable-operations.md) for required server
+capabilities, durable storage guidance and known limitations.
