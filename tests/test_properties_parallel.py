@@ -81,6 +81,41 @@ class ParallelPropertiesTests(unittest.TestCase):
                                               model_version_utc=VERSION))
             self.assertEqual(caught.exception.code,'MODEL_CHANGED')
             self.assertEqual(len(calls),1)
+    def test_transport_resume_reuses_same_artifact_path(self):
+        paths=[]
+        def export(client, model, destination, **options):
+            paths.append(destination)
+            if len(paths)==1:
+                raise BimBridgeError('TRANSPORT_ERROR','lost response',retryable=True)
+            return Artifact(options['element_ids'])
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'bim_bridge.properties_parallel.export_elements', side_effect=export):
+            rows=list(iter_properties_parallel(object(),MODEL,[element(1)],directory,
+                                               model_version_utc=VERSION))
+            self.assertEqual(len(rows),1)
+            self.assertEqual(paths,[paths[0],paths[0]])
+    def test_restart_reuses_verified_batch_after_failure(self):
+        submissions={0:0,1:0}
+        fail=[True]
+        def export(client, model, destination, **options):
+            index=int(Path(destination).name.split('-')[1])
+            if not Path(destination).exists():
+                submissions[index]+=1
+                if index==1 and fail[0]:
+                    fail[0]=False
+                    raise BimBridgeError('WORKER_UNAVAILABLE','worker offline')
+                Path(destination).write_text('verified')
+            return Artifact(options['element_ids'])
+        with tempfile.TemporaryDirectory() as directory, patch(
+                'bim_bridge.properties_parallel.export_elements', side_effect=export):
+            args=(object(),MODEL,[element(1),element(2)],directory)
+            with self.assertRaises(BimBridgeError):
+                list(iter_properties_parallel(*args,batch_size=1,concurrency=1,
+                                              model_version_utc=VERSION))
+            rows=list(iter_properties_parallel(*args,batch_size=1,concurrency=1,
+                                               model_version_utc=VERSION))
+            self.assertEqual(len(rows),2)
+            self.assertEqual(submissions,{0:1,1:2})
 
 
 if __name__ == '__main__':

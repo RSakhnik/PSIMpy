@@ -17,7 +17,8 @@ def _key(row):
 
 def iter_properties_parallel(client, model_key, element_ids, directory, *,
                              property_names=None, batch_size=500, concurrency=4,
-                             model_version_utc=None, progress=None, max_batch_retries=2):
+                             model_version_utc=None, progress=None, max_batch_retries=2,
+                             max_transport_resumes=2):
     """Yield verified batches; completed artifacts survive interruption.
 
     Each batch is an independent server export task. The Manager chooses an
@@ -27,6 +28,8 @@ def iter_properties_parallel(client, model_key, element_ids, directory, *,
         raise ValueError('batch_size and concurrency must be positive integers')
     if type(max_batch_retries) is not int or max_batch_retries < 0:
         raise ValueError('max_batch_retries must be a nonnegative integer')
+    if type(max_transport_resumes) is not int or max_transport_resumes < 0:
+        raise ValueError('max_transport_resumes must be a nonnegative integer')
     model_key = guid(model_key)
     elements = [element_payload(e) for e in element_ids]
     keys = [_key(e) for e in elements]
@@ -53,10 +56,18 @@ def iter_properties_parallel(client, model_key, element_ids, directory, *,
         worker_client = client._parallel_fork() if hasattr(client, '_parallel_fork') else client
         try:
             for attempt in range(max_batch_retries + 1):
-                artifact = export_elements(worker_client, model_key,
-                    directory / f'batch-{index:08d}-attempt-{attempt}.ndjson.gz',
-                    element_ids=batch, property_names=property_names,
-                    model_version_utc=version)
+                destination = directory / f'batch-{index:08d}-attempt-{attempt}.ndjson.gz'
+                for resume in range(max_transport_resumes + 1):
+                    try:
+                        artifact = export_elements(worker_client, model_key, destination,
+                            element_ids=batch, property_names=property_names,
+                            model_version_utc=version)
+                        break
+                    except BimBridgeError as error:
+                        if (error.code == 'MODEL_CHANGED' or
+                                not (error.retryable or error.code == 'CLIENT_TIMEOUT') or
+                                resume == max_transport_resumes):
+                            raise
                 try:
                     records = artifact.records()
                     manifest = next(records, None)

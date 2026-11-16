@@ -563,7 +563,9 @@ Each batch uses the worker's `export-elements` operation with explicit
 reused after rerunning the same call with identical arguments. The client
 checks the artifact summary, version and exact composite ID set before yielding
 a batch. Invalid batches get separate bounded attempts (`max_batch_retries`),
-while valid batch artifacts are reused. Keep the entire directory on persistent storage. This path requires
+while transient transport failures resume the same task path with
+`max_transport_resumes` and valid batch artifacts are reused. Keep the entire
+directory on persistent storage. This path requires
 the worker's `export-elements` and Manager's `artifact-upload-v2` capabilities.
 
 ## Discover property schemas
