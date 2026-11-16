@@ -3,7 +3,7 @@ import unittest
 import uuid
 from pathlib import Path
 
-from bim_bridge import BimBridgeError, walk_relations
+from bim_bridge import BimBridgeError, IncompleteResult, walk_relations
 
 MODEL = str(uuid.UUID(int=1))
 PART = str(uuid.UUID(int=2))
@@ -70,6 +70,25 @@ class WalkTests(unittest.TestCase):
             with self.assertRaises(BimBridgeError) as caught:
                 list(walk_relations(client, MODEL, [item(1)], state_path=path))
             self.assertEqual(caught.exception.code, 'MODEL_CHANGED')
+
+    def test_duplicate_seeds_and_budgeted_resume(self):
+        client = RelationsClient()
+        seeds = [item(1), item(1)]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'walk.json'
+            with self.assertRaises(IncompleteResult):
+                list(walk_relations(client, MODEL, seeds, state_path=path,
+                                    batch_size=3, max_elements=1))
+            self.assertEqual([len(call['ElementIds']) for call in client.calls], [1])
+            with self.assertRaises(IncompleteResult):
+                list(walk_relations(client, MODEL, seeds, state_path=path,
+                                    batch_size=3, max_elements=1))
+            self.assertEqual(len(client.calls), 1)
+            rows = list(walk_relations(client, MODEL, seeds, state_path=path,
+                                       batch_size=3, max_elements=3))
+            self.assertEqual([row['Element']['ElementId'] for row in rows],
+                             [item(i)['ElementId'] for i in (2, 3)])
+            self.assertEqual([len(call['ElementIds']) for call in client.calls], [1, 1, 1])
 
 
 if __name__ == '__main__':

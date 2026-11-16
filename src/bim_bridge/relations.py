@@ -27,7 +27,14 @@ def walk_relations(client, model_key, start_elements, *, direction='children', o
     if batch_size <= 0 or max_elements is not None and max_elements <= 0:
         raise ValueError('Batch size and max_elements must be positive')
     model_key = guid(model_key)
-    starts = [element_payload(e) for e in start_elements]
+    starts = []
+    start_keys = set()
+    for element in start_elements:
+        payload = element_payload(element)
+        key = _key(payload)
+        if key not in start_keys:
+            starts.append(payload)
+            start_keys.add(key)
     identity = hashlib.sha256(json.dumps([model_key, starts, direction, order, options],
                                           sort_keys=True, default=str).encode()).hexdigest()
     path = Path(state_path) if state_path else None
@@ -49,11 +56,20 @@ def walk_relations(client, model_key, start_elements, *, direction='children', o
     visited = {tuple(item) for item in state['Visited']}
     snapshot = ExportSnapshot(state['ModelVersionUtc'])
     while queue:
+        if max_elements is not None and len(visited) >= max_elements:
+            if any(_key(item) not in visited for item in queue):
+                raise IncompleteResult('Traversal reached max_elements; resume with a larger budget', state)
+            queue.clear()
+            break
         batch = []
+        selected = set()
         for item in queue if order == 'bfs' else reversed(queue):
-            if _key(item) not in visited:
+            key = _key(item)
+            if key not in visited and key not in selected:
                 batch.append(item)
-            if len(batch) >= batch_size:
+                selected.add(key)
+            if len(batch) >= batch_size or (max_elements is not None and
+                                            len(batch) >= max_elements - len(visited)):
                 break
         if not batch:
             queue.clear()
