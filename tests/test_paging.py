@@ -107,3 +107,17 @@ class PagingTests(unittest.TestCase):
                 list(iter_search_complete(PageClient(),MODEL,[PART],page_size=2,
                                           state_path=path,max_pages=1))
             self.assertEqual(json.loads(path.read_text())['Status'],'budget_exhausted')
+    def test_complete_search_state_binds_connection_and_options(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'search.json'
+            first=PageClient()
+            first._http=types.SimpleNamespace(base_url='https://bridge-a',_token='secret-a')
+            list(iter_search_complete(first,MODEL,[PART],page_size=2,state_path=path))
+            changed=PageClient()
+            changed._http=types.SimpleNamespace(base_url='https://bridge-b',_token='secret-a')
+            with self.assertRaises(ValueError):
+                list(iter_search_complete(changed,MODEL,[PART],page_size=2,state_path=path))
+            with self.assertRaises(ValueError):
+                list(iter_search_complete(first,MODEL,[PART],page_size=2,state_path=path,
+                                          priority=3))
+            self.assertNotIn('secret-a',path.read_text())

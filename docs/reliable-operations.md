@@ -36,7 +36,10 @@ responses only; it has not been exercised against a production BIM model.
   may receive the last yielded element again after interruption; output sinks
   should use `(ModelPartId, ElementId)` as their idempotency key. The search
   journal records cursor expiry, worker change, model change and completion;
-  its state counts IDs reprocessed by completed replay pages.
+  its state counts IDs reprocessed by completed replay pages. The state
+  identity includes the connection, credential fingerprint and search/submit
+  parameters; changing these inputs requires a fresh state path. Credentials
+  themselves are not written to the state file.
 * Result metadata may report `ExpiresAtUtc`; `Task.download()` rejects an
   already-expired result before fetching content. The reviewed task-status
   contract does not expose a task TTL, so the client cannot predict task

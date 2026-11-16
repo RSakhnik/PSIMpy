@@ -61,8 +61,13 @@ def iter_search_complete(client, model_key, part_ids=None, *, conditions=(),
     model_key = guid(model_key)
     parts = None if part_ids is None else [guid(p) for p in part_ids]
     filters = [c.payload() if isinstance(c, Condition) else c for c in conditions]
-    identity = hashlib.sha256(json.dumps([model_key, parts, filters, logical_operator, page_size],
-                                         sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    transport = getattr(client, '_http', None)
+    source = (getattr(transport, 'base_url', None),
+              hashlib.sha256(str(getattr(transport, '_token', '')).encode()).hexdigest()
+              if transport is not None else None)
+    identity = hashlib.sha256(json.dumps([source, model_key, parts, filters,
+                                         logical_operator, page_size, options],
+                                         sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
     path = Path(state_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
