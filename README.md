@@ -541,3 +541,21 @@ version and suppresses acknowledged `(ModelPartId, ElementId)` pairs. If the
 version changes, the iteration stops. A row delivered just before interruption
 may be delivered again on resume; make the consumer idempotent. Page and
 restart budgets produce `IncompleteResult`, not a successful completion.
+
+## Parallel properties for explicit IDs
+
+```python
+from bim_bridge import iter_properties_parallel
+
+for batch in iter_properties_parallel(client, model_key, element_ids,
+        "/content/drive/MyDrive/properties", property_names=["Name", "Mass"],
+        batch_size=500, concurrency=4):
+    process(batch["Elements"])
+```
+
+Each batch uses the worker's `export-elements` operation with explicit
+`ElementIds`. The Manager selects a suitable worker. Completed artifacts are
+reused after rerunning the same call with identical arguments. The client
+checks the artifact summary, version and exact composite ID set before yielding
+a batch. Keep the entire directory on persistent storage. This path requires
+the worker's `export-elements` and Manager's `artifact-upload-v2` capabilities.

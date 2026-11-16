@@ -38,6 +38,17 @@ class Client:
 
 
 class ExportsTests(unittest.TestCase):
+    def test_explicit_element_ids_use_server_selection(self):
+        client=Client()
+        with tempfile.TemporaryDirectory() as directory:
+            export_elements(client,MODEL,Path(directory)/'elements',
+                            element_ids=[{'ModelPartId':PART,'ElementId':MODEL}],
+                            property_names=['Name'])
+            self.assertEqual(client.submits[0][1]['ElementIds'],
+                             [{'ModelPartId':PART,'ElementId':MODEL}])
+            with self.assertRaises(ValueError):
+                export_elements(client,MODEL,Path(directory)/'other',element_ids=[],part_ids=[PART])
+
     def test_worker_export_does_not_round_trip_element_ids(self):
         client=Client()
         with tempfile.TemporaryDirectory() as directory:
