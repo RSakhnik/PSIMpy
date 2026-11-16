@@ -54,7 +54,10 @@ responses only; it has not been exercised against a production BIM model.
   overlapping network intervals without adding them into wall time, and
   leaves unavailable worker/queue metrics as unknown. Existing
   `ParallelExport` manifests and `ExportProfile` retain their own richer
-  shard telemetry.
+  shard telemetry. `ExportProfile` also reports error counts, recovered shards,
+  first-attempt success and a labeled estimate of potentially lost work when
+  prior-attempt processed-source counts are available. It does not present
+  unmeasured reprocessing as zero.
 * Schema sampling can stop because the search was exhausted, a budget was
   reached, or new schemas stopped appearing in the sampled groups. Only
   exhaustion plus loading every searched element is marked as a complete

@@ -11,6 +11,19 @@ from bim_bridge._diagnostics import spatial_performance
 
 
 class ProfileTests(unittest.TestCase):
+    def test_recovery_aggregates_keep_unknown_work_unknown(self):
+        manifest={'TotalWall':10,'Complete':True,'Shards':[
+            {'ShardId':0,'State':'READY','RetryCount':1,'ElementCount':5,
+             'Attempts':[{'TaskId':'old','State':'FAILED','Error':{'Code':'TRANSPORT_ERROR'}}],
+             'TaskId':'new'},
+            {'ShardId':1,'State':'READY','RetryCount':0,'ElementCount':5,'TaskId':'first'}]}
+        data=ExportProfile(manifest).data
+        self.assertEqual(data['RecoveredShards'],1)
+        self.assertEqual(data['FirstAttemptSuccessRate'],.5)
+        self.assertEqual(data['ErrorCounts']['TRANSPORT_ERROR'],1)
+        self.assertIsNone(data['PotentiallyLostWorkElementsEstimate'])
+        self.assertIsNone(data['ReprocessedElements'])
+
     def test_old_manifest_has_unknown_scheduler_telemetry(self):
         data=ExportProfile(dict(Shards=[],TotalWall=1,Complete=True)).data
         self.assertIsNone(data['RpcEvents'])
