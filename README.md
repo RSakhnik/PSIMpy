@@ -503,4 +503,3 @@ repeated after an ambiguous transport failure; retain the reported
 `client_request_id` and reconcile the task with the Manager before submitting
 again. The client cannot infer from `TRANSPORT_ERROR` whether the Manager
 accepted a request.
-
