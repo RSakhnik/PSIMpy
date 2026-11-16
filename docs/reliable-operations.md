@@ -35,6 +35,10 @@ responses only; it has not been exercised against a production BIM model.
   at the pinned version, with a bounded restart and page budget. The caller
   may receive the last yielded element again after interruption; output sinks
   should use `(ModelPartId, ElementId)` as their idempotency key.
+* Result metadata may report `ExpiresAtUtc`; `Task.download()` rejects an
+  already-expired result before fetching content. The reviewed task-status
+  contract does not expose a task TTL, so the client cannot predict task
+  expiration from status alone. Missing expiry metadata remains unknown.
 * The property export keeps verified artifacts and uses separate bounded
   attempts for incomplete batches. A model version mismatch is terminal.
 * Checkpoint and search state must remain on persistent storage, with adjacent

@@ -74,6 +74,14 @@ class Task:
                           TransportType=type(self.client._http).__name__, Attempts=attempts))
         else:
             metadata = self.metadata()
+        expiry = metadata.get('ExpiresAtUtc')
+        if expiry:
+            expires_at = datetime.fromisoformat(expiry.replace('Z', '+00:00'))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at <= datetime.now(timezone.utc):
+                raise BimBridgeError('RESULT_EXPIRED', 'Result metadata reports expired content',
+                                     task_id=self.id, failure_kind='permanent')
         return self.client._http.download(f"/tasks/{self.id}/result/content", destination, metadata,
                                          overwrite=overwrite, decompress=decompress, progress=progress, resume=resume,
                                          telemetry=telemetry)

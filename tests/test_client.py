@@ -192,6 +192,19 @@ class ClientTests(unittest.TestCase):
             metadata['Sha256']=hashlib.sha256(raw).hexdigest()
             self.client.download_file(FileReference(ID),Path(tmp)/'source.bin')
             self.assertEqual((Path(tmp)/'source.bin').read_bytes(),raw)
+    def test_expired_result_metadata_prevents_download(self):
+        def handler(method,path,body):
+            if path.endswith('/metadata'):
+                return 200,{}, {'ExpiresAtUtc':'2000-01-01T00:00:00Z'}
+            if path.endswith('/content'):
+                raise AssertionError('expired content must not be fetched')
+            return self.default(method,path,body)
+        type(self).handler=staticmethod(handler)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(BimBridgeError) as caught:
+                self.client.task(ID).download(Path(directory)/'result')
+            self.assertEqual(caught.exception.code,'RESULT_EXPIRED')
+            self.assertFalse(any(path.endswith('/content') for _,path,_,_ in self.calls))
     def test_bad_length_and_partial_stream_cleanup(self):
         type(self).handler=staticmethod(lambda *a:(200,{},b'abc'))
         with tempfile.TemporaryDirectory() as tmp:
