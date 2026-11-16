@@ -4,7 +4,7 @@ from .errors import BimBridgeError, TaskFailed, TaskTimeout, IncompleteResult
 from .bulk import Checkpoints, ExportSnapshot, select_parts, iter_search_elements, iter_properties, iter_relations, write_jsonl
 from .spatial import iter_spatial_data, export_spatial_data, iter_placed_vertices
 from .pilot import build_pilot_adapter
-from ._paging import iter_search_pages
+from ._paging import iter_search_pages, iter_search_complete
 from .exports import ExportArtifact
 from .binary_spatial import SpatialArtifact, SpatialBufferSection
 from .profile import ExportProfile
@@ -19,3 +19,4 @@ from .parallel import ParallelExport, export_spatial_parallel
 __all__ += ["ParallelExport", "export_spatial_parallel"]
 __all__ += ["ExportProfile"]
 __all__ += ["walk_relations"]
+__all__ += ["iter_search_complete"]

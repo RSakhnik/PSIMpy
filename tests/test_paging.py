@@ -1,6 +1,8 @@
 import copy
+import tempfile
 import unittest
-from bim_bridge import BimBridgeError, IncompleteResult, iter_search_elements, iter_search_pages
+from pathlib import Path
+from bim_bridge import BimBridgeError, IncompleteResult, iter_search_elements, iter_search_pages, iter_search_complete
 from spatial_support import MODEL, PART, V1, V2, elements
 
 
@@ -45,3 +47,46 @@ class PagingTests(unittest.TestCase):
         with self.assertRaises(BimBridgeError) as caught:list(iter_search_pages(client,MODEL,[PART]))
         self.assertEqual(caught.exception.code,'CAPABILITY_NOT_AVAILABLE')
         with self.assertRaises(IncompleteResult):list(iter_search_pages(PageClient(),MODEL,[PART],max_pages=1))
+
+    def test_complete_search_restarts_expired_cursor_without_duplicate_ids(self):
+        client=PageClient();expired=[False]
+        original=client.run
+        def run(operation,payload,**options):
+            if payload.get('Cursor')=='opaque-1' and not expired[0]:
+                expired[0]=True
+                raise BimBridgeError('CURSOR_EXPIRED','expired')
+            return original(operation,payload,**options)
+        client.run=run
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'search.json'
+            rows=list(iter_search_complete(client,MODEL,[PART],page_size=2,state_path=path))
+            self.assertEqual(len(rows),5)
+            self.assertEqual(len({(r['ModelPartId'],r['ElementId']) for r in rows}),5)
+            self.assertEqual(list(iter_search_complete(client,MODEL,[PART],page_size=2,state_path=path)),[])
+
+    def test_complete_search_detects_changed_version_on_restart(self):
+        client=PageClient();original=client.run
+        def run(operation,payload,**options):
+            if payload.get('Cursor')=='opaque-1':
+                client.version=V2
+                raise BimBridgeError('CURSOR_EXPIRED','expired')
+            return original(operation,payload,**options)
+        client.run=run
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(BimBridgeError) as caught:
+                list(iter_search_complete(client,MODEL,[PART],page_size=2,
+                                          state_path=Path(directory)/'search.json'))
+            self.assertEqual(caught.exception.code,'MODEL_CHANGED')
+
+    def test_complete_search_resumes_mid_page(self):
+        client=PageClient()
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'search.json'
+            iterator=iter_search_complete(client,MODEL,[PART],page_size=2,state_path=path)
+            first=next(iterator)
+            second=next(iterator)
+            iterator.close()
+            remaining=list(iter_search_complete(client,MODEL,[PART],page_size=2,state_path=path))
+            self.assertEqual(len(remaining),4)
+            self.assertEqual(remaining[0]['ElementId'],second['ElementId'])
+            self.assertEqual(len({r['ElementId'] for r in [first]+remaining}),5)

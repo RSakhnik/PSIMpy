@@ -522,3 +522,22 @@ queue, visited IDs, and model version. The worker must report
 `ModelVersionUtc` for durable resumption; a version change stops the traversal.
 Keep the state on mounted persistent storage in Colab because its temporary
 filesystem does not survive removal of the runtime.
+
+## Resumable paged search
+
+```python
+from bim_bridge import iter_search_complete
+
+for element in iter_search_complete(client, model_key, part_ids,
+                                    page_size=10000,
+                                    state_path="/content/drive/MyDrive/search.json"):
+    process(element)
+```
+
+The state JSON and adjacent `.ids.sqlite` ledger must be kept together.
+The worker must support `paged-search-v2` and report `ModelVersionUtc`.
+On `CURSOR_EXPIRED`, the search restarts from the beginning with the original
+version and suppresses acknowledged `(ModelPartId, ElementId)` pairs. If the
+version changes, the iteration stops. A row delivered just before interruption
+may be delivered again on resume; make the consumer idempotent. Page and
+restart budgets produce `IncompleteResult`, not a successful completion.
