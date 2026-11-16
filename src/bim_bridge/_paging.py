@@ -72,12 +72,19 @@ def iter_search_complete(client, model_key, part_ids=None, *, conditions=(),
     else:
         state = {'Identity': identity, 'ModelVersionUtc': None, 'Cursor': None,
                  'CursorWorkerInstanceId': None, 'PendingCursor': None,
-                 'Pages': 0, 'Restarts': 0, 'Complete': False, 'Status': 'running'}
+                 'Pages': 0, 'Restarts': 0, 'ReprocessedElements': 0,
+                 'Complete': False, 'Status': 'running'}
         _atomic_json(path, state)
     ledger_path = Path(str(path) + '.ids.sqlite')
     if (state['Pages'] or state.get('Pending')) and not ledger_path.exists():
         raise IncompleteResult('Search ID ledger is missing; start a new search', state)
     database = sqlite3.connect(ledger_path)
+    journal = getattr(getattr(client, '_http', None), 'journal', None)
+    def emit(kind, **fields):
+        if journal:
+            journal(dict(OperationId=identity, Operation='search-elements', EventType=kind,
+                         ModelKey=model_key, ModelVersionUtc=state['ModelVersionUtc'],
+                         PageIndex=state['Pages'], **fields))
     try:
         database.execute('CREATE TABLE IF NOT EXISTS ids (part TEXT NOT NULL, element TEXT NOT NULL, '
                          'PRIMARY KEY (part, element))')
@@ -103,19 +110,31 @@ def iter_search_complete(client, model_key, part_ids=None, *, conditions=(),
             except BimBridgeError as error:
                 if error.code != 'CURSOR_EXPIRED' or not cursor:
                     raise
+                emit('cursor_expired', Success=False, ErrorCode=error.code,
+                     RecoveryReason='cursor_expired', RecoveryStrategy='restart_from_beginning',
+                     RetryCount=state['Restarts'])
                 if state['Restarts'] >= max_restarts:
                     raise IncompleteResult('Search restart budget exhausted', state) from error
-                state.update(Cursor=None, CursorWorkerInstanceId=None, Restarts=state['Restarts']+1)
+                state.update(Cursor=None, PreviousWorkerInstanceId=state.get('CursorWorkerInstanceId'),
+                             CursorWorkerInstanceId=None, Restarts=state['Restarts']+1)
                 _atomic_json(path, state)
                 continue
             version = page['ModelVersionUtc']
             if state['ModelVersionUtc'] and version != state['ModelVersionUtc']:
+                emit('model_changed', Success=False, ErrorCode='MODEL_CHANGED')
                 raise BimBridgeError('MODEL_CHANGED', 'Model version changed during search')
+            previous_worker = state.get('CursorWorkerInstanceId') or state.get('PreviousWorkerInstanceId')
+            current_worker = page.get('CursorWorkerInstanceId')
+            if previous_worker and current_worker and previous_worker != current_worker:
+                emit('worker_changed', Success=None, WorkerInstanceId=current_worker,
+                     RecoveryReason='worker_changed')
+            state.pop('PreviousWorkerInstanceId', None)
             state['ModelVersionUtc'] = version
             replay = state.get('PendingCursor') == cursor and state.get('Pending', False)
             state.update(PendingCursor=cursor, Pending=True)
             _atomic_json(path, state)
             local = set()
+            reprocessed_page = 0
             for element in page['Elements']:
                 key = (guid(element['ModelPartId']), guid(element['ElementId']))
                 if key in local:
@@ -124,16 +143,21 @@ def iter_search_complete(client, model_key, part_ids=None, *, conditions=(),
                 if database.execute('SELECT 1 FROM ids WHERE part=? AND element=?', key).fetchone():
                     if state['Restarts'] == 0 and not replay:
                         raise IncompleteResult('Search pages overlap', page)
+                    reprocessed_page += 1
                     continue
                 yield dict(element, ModelVersionUtc=version, SnapshotVerified=True)
                 database.execute('INSERT OR IGNORE INTO ids VALUES (?, ?)', key)
                 database.commit()
-            state.update(Pages=state['Pages']+1, Cursor=page.get('NextCursor'),
+            state.update(Pages=state['Pages']+1,
+                         ReprocessedElements=state.get('ReprocessedElements', 0)+reprocessed_page,
+                         Cursor=page.get('NextCursor'),
                          CursorWorkerInstanceId=page.get('CursorWorkerInstanceId') if page['HasMore'] else None,
                          Pending=False, Complete=not page['HasMore'],
                          Status='completed' if not page['HasMore'] else 'running')
             _atomic_json(path, state)
             if state['Complete']:
+                emit('completed', Success=True, Status='completed',
+                     ReprocessedElements=state['ReprocessedElements'])
                 return
         raise IncompleteResult('Search page budget exhausted', state)
     except (GeneratorExit, KeyboardInterrupt):
@@ -144,11 +168,13 @@ def iter_search_complete(client, model_key, part_ids=None, *, conditions=(),
         state['Status'] = ('budget_exhausted' if 'budget' in error.message.lower()
                            else 'error')
         _atomic_json(path, state)
+        emit('incomplete', Success=False, Status=state['Status'], ErrorCode=error.code)
         raise
     except BimBridgeError as error:
         state['Status'] = 'model_changed' if error.code == 'MODEL_CHANGED' else 'error'
         state['ErrorCode'] = error.code
         _atomic_json(path, state)
+        emit('error', Success=False, Status=state['Status'], ErrorCode=error.code)
         raise
     finally:
         database.close()

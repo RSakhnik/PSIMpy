@@ -1,5 +1,6 @@
 import copy
 import json
+import types
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,6 +52,7 @@ class PagingTests(unittest.TestCase):
 
     def test_complete_search_restarts_expired_cursor_without_duplicate_ids(self):
         client=PageClient();expired=[False]
+        events=[];client._http=types.SimpleNamespace(journal=events.append)
         original=client.run
         def run(operation,payload,**options):
             if payload.get('Cursor')=='opaque-1' and not expired[0]:
@@ -65,6 +67,9 @@ class PagingTests(unittest.TestCase):
             self.assertEqual(len({(r['ModelPartId'],r['ElementId']) for r in rows}),5)
             self.assertEqual(list(iter_search_complete(client,MODEL,[PART],page_size=2,state_path=path)),[])
             self.assertEqual(json.loads(path.read_text())['Status'],'completed')
+            self.assertEqual(json.loads(path.read_text())['ReprocessedElements'],2)
+            self.assertIn('cursor_expired',[event['EventType'] for event in events])
+            self.assertIn('completed',[event['EventType'] for event in events])
 
     def test_complete_search_detects_changed_version_on_restart(self):
         client=PageClient();original=client.run

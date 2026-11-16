@@ -34,7 +34,9 @@ responses only; it has not been exercised against a production BIM model.
 * An expired cursor cannot be resumed in place. Search restarts from page one
   at the pinned version, with a bounded restart and page budget. The caller
   may receive the last yielded element again after interruption; output sinks
-  should use `(ModelPartId, ElementId)` as their idempotency key.
+  should use `(ModelPartId, ElementId)` as their idempotency key. The search
+  journal records cursor expiry, worker change, model change and completion;
+  its state counts IDs reprocessed by completed replay pages.
 * Result metadata may report `ExpiresAtUtc`; `Task.download()` rejects an
   already-expired result before fetching content. The reviewed task-status
   contract does not expose a task TTL, so the client cannot predict task
