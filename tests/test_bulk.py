@@ -93,6 +93,17 @@ class BulkTests(unittest.TestCase):
             self.assertEqual(cp.run('echo',{}),{'ok':True})
             self.assertEqual(client.posts,1)
 
+    def test_tampered_checkpoint_result_is_not_reused(self):
+        client=FakeClient()
+        with tempfile.TemporaryDirectory() as tmp:
+            cp=Checkpoints(client,tmp)
+            self.assertEqual(cp.run('echo',{}),{'ok':True})
+            result=next(cp.directory.glob('*.result.json'))
+            result.write_text('{"ok": false}',encoding='utf-8')
+            self.assertEqual(cp.run('echo',{}),{'ok':True})
+            self.assertEqual(client.posts,1)
+            self.assertEqual(json.loads(result.read_text()),{'ok':True})
+
     def test_incomplete_batches_never_enter_checkpoint_cache(self):
         element={'ModelPartId':PART,'ElementId':MODEL}
         for operation, response in (

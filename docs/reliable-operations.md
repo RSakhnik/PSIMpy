@@ -46,6 +46,8 @@ responses only; it has not been exercised against a production BIM model.
   does not survive deletion of the runtime. Mounted cloud filesystems may not
   offer atomic rename or advisory locks with the same guarantees as local
   filesystems; validate that storage before using it for critical exports.
+  `Checkpoints` writes a SHA-256 sidecar for completed JSON results and
+  re-fetches a result whose sidecar or content is missing or inconsistent.
 * `EventJournal` records REST transport attempts, including failures before a
   successful retry. Pilot direct transport and every worker/Manager lifecycle
   transition are not yet represented in this journal. `SessionProfile` reports

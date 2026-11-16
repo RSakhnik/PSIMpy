@@ -70,15 +70,26 @@ class Checkpoints:
         wait_options = {k: options.pop(k) for k in ("timeout", "on_status", "cancel_on_timeout") if k in options}
         key = hashlib.sha256(json.dumps([operation, payload, options], sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
         result_path = self.directory / (key + '.result.json')
+        checksum_path = self.directory / (key + '.sha256.json')
         state_path = self.directory / (key + '.task.json')
         spatial = operation == 'get-element-spatial-data'
         unpinned_read = operation in ('search-elements', 'load-element-properties', 'get-element-relations', 'get-element-spatial-data') and not payload.get('ModelVersionUtc')
         refresh_completed = result_path.exists() and unpinned_read
         if result_path.exists() and not unpinned_read:
+            cache_valid = True
+            if checksum_path.exists():
+                try:
+                    expected = json.loads(checksum_path.read_text(encoding='utf-8'))['Sha256']
+                    cache_valid = hashlib.sha256(result_path.read_bytes()).hexdigest() == expected
+                except (KeyError, ValueError, OSError):
+                    cache_valid = False
+            elif operation in ('load-element-properties', 'get-element-relations',
+                               'get-element-spatial-data'):
+                cache_valid = False
             try:
-                result = json.loads(result_path.read_text(encoding="utf-8"))
+                result = json.loads(result_path.read_text(encoding="utf-8")) if cache_valid else None
             except (ValueError, OSError):
-                if not spatial:
+                if not spatial and operation not in ('load-element-properties', 'get-element-relations'):
                     raise
                 result = None
             if spatial:
@@ -87,7 +98,7 @@ class Checkpoints:
                     refresh_completed = True
                 usable = result is not None and not refresh_completed
             else:
-                usable = _batch_complete(operation, payload, result)
+                usable = result is not None and _batch_complete(operation, payload, result)
             if usable:
                 if payload.get('ModelVersionUtc'):
                     ExportSnapshot(payload['ModelVersionUtc']).accept(result)
@@ -120,6 +131,7 @@ class Checkpoints:
                     return result
             if _batch_complete(operation, payload, result):
                 _atomic_json(result_path, result)
+                _atomic_json(checksum_path, {'Sha256': hashlib.sha256(result_path.read_bytes()).hexdigest()})
             return result
 
 def select_parts(context, *, project=None, name_contains=None, model_key=None, allow_partial=False):
