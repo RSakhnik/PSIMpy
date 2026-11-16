@@ -87,6 +87,7 @@ class BimBridge:
         instance=cls.__new__(cls)
         instance._http=PilotTransport(server_database,login,password,**transport_options)
         instance.task_timeout,instance.poll_interval=task_timeout,poll_interval
+        instance.submit_retries=0
         return instance
 
     def close(self):
@@ -97,13 +98,15 @@ class BimBridge:
                  token_file=None, task_timeout=1800, poll_interval=2, http_timeout=60,
                  retries=2, auth="token", max_json_bytes=128*1024*1024,
                  retry_base=1.0, retry_cap=5.0, retry_jitter=0.2,
-                 event_journal_path=None):
+                 event_journal_path=None, submit_retries=1):
         if token is not None and token_file is not None:
             raise ValueError("Задайте token или token_file, не оба")
         if token_file is not None:
             token = Path(token_file).read_text(encoding="utf-8-sig").strip()
         if task_timeout <= 0 or poll_interval <= 0:
             raise ValueError("Таймаут и интервал должны быть положительными")
+        if type(submit_retries) is not int or submit_retries < 0:
+            raise ValueError('submit_retries must be a nonnegative integer')
         self._http = Transport(base_url, token, timeout=http_timeout, retries=retries, auth=auth,
                                max_json_bytes=max_json_bytes, retry_base=retry_base,
                                retry_cap=retry_cap, retry_jitter=retry_jitter)
@@ -111,6 +114,7 @@ class BimBridge:
             from .event_journal import EventJournal
             self._http.journal = EventJournal(event_journal_path)
         self.task_timeout, self.poll_interval = task_timeout, poll_interval
+        self.submit_retries = submit_retries
     def health(self):
         return self._http.json("GET", "/health")
     def export_elements(self, model_key, destination, **options):
@@ -126,6 +130,7 @@ class BimBridge:
         instance=type(self).__new__(type(self))
         instance._http=self._http.fork()
         instance.task_timeout,instance.poll_interval=self.task_timeout,self.poll_interval
+        instance.submit_retries=self.submit_retries
         return instance
     def statistics(self):
         return self._http.json("GET", "/statistics")
@@ -155,7 +160,7 @@ class BimBridge:
                preferred_worker_instance_id=None, required_capabilities=None,
                priority=0, can_retry=True, max_attempts=2, expires_at_utc=None,
                client_request_id=None, protocol_version=None):
-        """POST не повторяется автоматически при сетевой ошибке."""
+        """Retry an ambiguous transport failure with the same request ID only."""
         request_id = guid(client_request_id) if client_request_id else str(uuid.uuid4())
         body = {"clientRequestId": request_id, "operationCode": operation,
                 "payload": {} if payload is None else payload,
@@ -166,11 +171,16 @@ class BimBridge:
                 "expiresAtUtc": utc(expires_at_utc)}
         if protocol_version:
             body["protocolVersion"] = protocol_version
-        try:
-            accepted = self._http.json("POST", "/tasks", body)
-        except BimBridgeError as exc:
-            exc.client_request_id = request_id
-            raise
+        for attempt in range(self.submit_retries + 1):
+            try:
+                accepted = self._http.json("POST", "/tasks", body)
+                break
+            except BimBridgeError as exc:
+                exc.client_request_id = request_id
+                if (exc.code != 'TRANSPORT_ERROR' or exc.status_code is not None
+                        or attempt >= self.submit_retries):
+                    raise
+                time.sleep(self._http._retry_delay(attempt))
         return Task(self, guid(accepted["TaskId"]), request_id)
     def run(self, operation, payload=None, *, timeout=None, on_status=None,
             cancel_on_timeout=False, **submit_options):

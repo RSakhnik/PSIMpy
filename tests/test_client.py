@@ -100,6 +100,30 @@ class ClientTests(unittest.TestCase):
         self.calls.clear();self.client._http.retries=2
         with self.assertRaises(BimBridgeError) as caught:self.client.submit('echo')
         self.assertEqual(len(self.calls),1);self.assertIsNotNone(caught.exception.client_request_id)
+    def test_lost_post_response_reuses_client_request_id(self):
+        accepted=[]
+        def post(method,path,body):
+            if method=='POST':
+                request=json.loads(body)['clientRequestId']
+                if request not in accepted:accepted.append(request)
+                return 202,{}, {'TaskId':ID}
+            return self.default(method,path,body)
+        type(self).handler=staticmethod(post)
+        original=self.client._http.json
+        attempts=[]
+        def lost(method,path,payload=None):
+            if method=='POST':
+                attempts.append(payload['clientRequestId'])
+                if len(attempts)==1:
+                    original(method,path,payload)
+                    raise BimBridgeError('TRANSPORT_ERROR','response lost',retryable=True)
+            return original(method,path,payload)
+        self.client._http.json=lost
+        with patch('bim_bridge.client.time.sleep'):
+            task=self.client.submit('echo')
+        self.assertEqual(task.id,ID)
+        self.assertEqual(attempts,[task.client_request_id]*2)
+        self.assertEqual(accepted,[task.client_request_id])
     def test_get_retry_and_redirect_block(self):
         type(self).handler=staticmethod(lambda *a:(503,{}, {}) if len(self.calls)==1 else (200,{}, {'Ready':True}))
         self.client._http.retries=1

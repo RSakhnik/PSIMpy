@@ -22,10 +22,13 @@ responses only; it has not been exercised against a production BIM model.
 
 ## Recovery boundaries
 
-* A lost POST response is ambiguous. `ClientRequestId` is preserved by export
-  checkpoints, but the client cannot prove whether Manager accepted the task
-  unless Manager reconciles that request ID. It does not blindly change IDs
-  after `TRANSPORT_ERROR`.
+* A lost POST response is ambiguous. The reviewed Manager implementation
+  deduplicates a repeated `ClientRequestId` while its task record exists and
+  returns the original `TaskId`. The REST client therefore retries only a
+  transport failure without an HTTP response, with the identical request ID
+  and body and a finite `submit_retries` budget. It never changes IDs during
+  that recovery. Once Manager retention expires, the client cannot prove that
+  an older task once existed. Direct Pilot transport retains its prior policy.
 * An expired cursor cannot be resumed in place. Search restarts from page one
   at the pinned version, with a bounded restart and page budget. The caller
   may receive the last yielded element again after interruption; output sinks

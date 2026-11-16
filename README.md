@@ -299,8 +299,9 @@ except BimBridgeError as error:
 Сохраняются коды сервера, включая ограничения ресурсов и недоступность модели.
 
 Безопасные GET повторяются при временных сетевых ошибках и HTTP 429/502/503/504.
-POST не повторяется вслепую. При неясном исходе отправки сохраните
-`error.client_request_id` и повторите тот же запрос с этим идентификатором.
+POST после ошибки транспорта без HTTP-ответа повторяется ограниченно с тем же
+`ClientRequestId` (`submit_retries=1` по умолчанию). При исчерпании попыток
+сохраните `error.client_request_id` и повторите тот же запрос с этим ID.
 Дедупликация действует, пока менеджер хранит задание. Checkpoints делает это
 автоматически. Не запускайте новую полную выгрузку после каждого таймаута.
 
@@ -498,11 +499,12 @@ Implementation report and synthetic results: [parallel-implementation-report.md]
 For the REST connection, `BimBridge(..., http_timeout=60, retries=2,
 retry_base=1.0, retry_cap=5.0, retry_jitter=0.2)` controls bounded GET
 retries. Delays use exponential backoff with jitter and are recorded per
-attempt by the transport telemetry hook. POST submission is deliberately not
-repeated after an ambiguous transport failure; retain the reported
-`client_request_id` and reconcile the task with the Manager before submitting
-again. The client cannot infer from `TRANSPORT_ERROR` whether the Manager
-accepted a request.
+attempt by the transport telemetry hook. `submit_retries=1` bounds retries of
+an ambiguous POST transport failure without an HTTP response. Every attempt
+uses the same `ClientRequestId` and request body, relying on Manager's
+deduplication contract. HTTP error responses are not automatically retried.
+The client cannot infer from `TRANSPORT_ERROR` whether Manager accepted a
+request; keep `error.client_request_id` if the retry budget is exhausted.
 
 ## Resumable relation traversal
 
