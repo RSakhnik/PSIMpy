@@ -10,6 +10,7 @@ from .binary_spatial import SpatialArtifact, SpatialBufferSection
 from .profile import ExportProfile
 from .relations import walk_relations
 from .properties_parallel import iter_properties_parallel
+from .schema_discovery import discover_property_schemas
 
 __all__ = ["BimBridge", "Task", "Condition", "Element", "FileReference", "BimBridgeError",
            "TaskFailed", "TaskTimeout", "IncompleteResult", "Checkpoints", "ExportSnapshot", "select_parts",
@@ -22,3 +23,4 @@ __all__ += ["ExportProfile"]
 __all__ += ["walk_relations"]
 __all__ += ["iter_search_complete"]
 __all__ += ["iter_properties_parallel"]
+__all__ += ["discover_property_schemas"]

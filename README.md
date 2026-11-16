@@ -560,3 +560,21 @@ checks the artifact summary, version and exact composite ID set before yielding
 a batch. Invalid batches get separate bounded attempts (`max_batch_retries`),
 while valid batch artifacts are reused. Keep the entire directory on persistent storage. This path requires
 the worker's `export-elements` and Manager's `artifact-upload-v2` capabilities.
+
+## Discover property schemas
+
+```python
+from bim_bridge import discover_property_schemas
+
+report = discover_property_schemas(client, model_key, part_ids,
+    "/content/drive/MyDrive/schemas.json", max_pages=500, max_loads=200)
+print(report["Status"], report["Coverage"], report["History"])
+```
+
+The search groups similar names by replacing digit runs with `#`. Pass a
+`group_key` callback and stable `group_name` to choose another rule. The saved
+report includes property category, name, type and unit. `search_exhausted`,
+`page_budget`, `load_budget`, `time_budget` and `sample_stable` are distinct
+outcomes. `sample_stable` does not prove full coverage. A full inventory is
+reported only when every searched element was loaded and the search completed.
+Keep both the report and adjacent search state and SQLite ledger together.
