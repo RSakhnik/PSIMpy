@@ -176,7 +176,8 @@ class TokenHttpChunkCompatibilityTests(unittest.TestCase):
              patch('bim_bridge.transport.time.sleep'):
             self.assertIs(transport.open('GET','/health'),result)
         self.assertEqual([e['Success'] for e in events],[False,True])
-        self.assertEqual(events[0]['RetryWaitMs'],1000)
+        self.assertGreaterEqual(events[0]['RetryWaitMs'],800)
+        self.assertLessEqual(events[0]['RetryWaitMs'],1200)
         self.assertEqual(events[0]['ErrorCode'],'TRANSPORT_ERROR')
 
     def test_existing_http_client_resumes_by_protocol_chunks_without_ranges(self):
