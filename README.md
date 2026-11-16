@@ -503,3 +503,22 @@ repeated after an ambiguous transport failure; retain the reported
 `client_request_id` and reconcile the task with the Manager before submitting
 again. The client cannot infer from `TRANSPORT_ERROR` whether the Manager
 accepted a request.
+
+## Resumable relation traversal
+
+```python
+from bim_bridge import walk_relations
+
+for relation in walk_relations(client, model_key, start_ids,
+                               direction="children", order="bfs",
+                               batch_size=100, state_path="/content/drive/MyDrive/walk.json"):
+    process(relation)
+```
+
+Run the same call with the same inputs and state path to resume. A resumed
+traversal may repeat the last yielded relation, so consumers should use the
+`(ModelPartId, ElementId)` pair for idempotent output. The state records the
+queue, visited IDs, and model version. The worker must report
+`ModelVersionUtc` for durable resumption; a version change stops the traversal.
+Keep the state on mounted persistent storage in Colab because its temporary
+filesystem does not survive removal of the runtime.
