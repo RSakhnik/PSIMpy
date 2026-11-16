@@ -120,11 +120,17 @@ class ClientTests(unittest.TestCase):
                     raise BimBridgeError('TRANSPORT_ERROR','response lost',retryable=True)
             return original(method,path,payload)
         self.client._http.json=lost
+        recovery_events=[]
+        self.client._http.journal=recovery_events.append
         with patch('bim_bridge.client.time.sleep'):
             task=self.client.submit('echo')
         self.assertEqual(task.id,ID)
         self.assertEqual(attempts,[task.client_request_id]*2)
         self.assertEqual(accepted,[task.client_request_id])
+        recovery=next(event for event in recovery_events if event['EventType']=='submit_retry')
+        self.assertEqual(recovery['ClientRequestId'],task.client_request_id)
+        self.assertEqual(recovery['RecoveryStrategy'],'retry_same_client_request_id')
+        self.assertGreaterEqual(recovery['RetryWaitMs'],0)
     def test_transport_failure_kind_depends_on_request_method(self):
         with patch.object(self.client._http._opener,'open',side_effect=urllib.error.URLError('offline')):
             for method, kind in [('GET','temporary'),('POST','ambiguous')]:

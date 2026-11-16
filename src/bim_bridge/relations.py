@@ -35,7 +35,11 @@ def walk_relations(client, model_key, start_elements, *, direction='children', o
         if key not in start_keys:
             starts.append(payload)
             start_keys.add(key)
-    identity = hashlib.sha256(json.dumps([model_key, starts, direction, order, options],
+    transport = getattr(client, '_http', None)
+    source = (getattr(transport, 'base_url', None),
+              hashlib.sha256(str(getattr(transport, '_token', '')).encode()).hexdigest()
+              if transport is not None else None)
+    identity = hashlib.sha256(json.dumps([source, model_key, starts, direction, order, options],
                                           sort_keys=True, default=str).encode()).hexdigest()
     path = Path(state_path) if state_path else None
     if path and path.exists():

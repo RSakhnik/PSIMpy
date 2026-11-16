@@ -192,7 +192,17 @@ class BimBridge:
                 if (exc.code != 'TRANSPORT_ERROR' or exc.status_code is not None
                         or attempt >= self.submit_retries):
                     raise
-                time.sleep(self._http._retry_delay(attempt))
+                delay = self._http._retry_delay(attempt)
+                journal = getattr(self._http, 'journal', None)
+                if journal:
+                    journal(dict(EventType='submit_retry', Operation='SubmitTask',
+                                 OperationId=request_id, ClientRequestId=request_id,
+                                 ModelKey=body['targetModelKey'], Attempt=attempt+1,
+                                 RetryCount=attempt+1, RetryWaitMs=delay*1000,
+                                 Success=None, ErrorCode=exc.code, Retryable=True,
+                                 RecoveryReason='ambiguous_post_transport',
+                                 RecoveryStrategy='retry_same_client_request_id'))
+                time.sleep(delay)
         return Task(self, guid(accepted["TaskId"]), request_id)
     def run(self, operation, payload=None, *, timeout=None, on_status=None,
             cancel_on_timeout=False, **submit_options):

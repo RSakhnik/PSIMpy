@@ -18,7 +18,8 @@ responses only; it has not been exercised against a production BIM model.
   chooses an eligible worker for each task. Every artifact must have a complete
   summary and a matching model version.
 * Durable relation traversal requires a worker that confirms
-  `ModelVersionUtc` in `get-element-relations` responses.
+  `ModelVersionUtc` in `get-element-relations` responses. Its saved state also
+  binds to the connection and credential fingerprint.
 
 ## Recovery boundaries
 
@@ -27,7 +28,8 @@ responses only; it has not been exercised against a production BIM model.
   returns the original `TaskId`. The REST client therefore retries only a
   transport failure without an HTTP response, with the identical request ID
   and body and a finite `submit_retries` budget. It never changes IDs during
-  that recovery. Once Manager retention expires, the client cannot prove that
+  that recovery. The journal records the scheduled delay and same-ID recovery
+  strategy. Once Manager retention expires, the client cannot prove that
   an older task once existed. Direct Pilot transport retains its prior policy.
   `BimBridgeError.failure_kind` marks that POST transport outcome as
   `ambiguous`; it does not attribute the cause to a particular worker.

@@ -1,4 +1,5 @@
 import tempfile
+import types
 import unittest
 import uuid
 from pathlib import Path
@@ -89,6 +90,17 @@ class WalkTests(unittest.TestCase):
             self.assertEqual([row['Element']['ElementId'] for row in rows],
                              [item(i)['ElementId'] for i in (2, 3)])
             self.assertEqual([len(call['ElementIds']) for call in client.calls], [1, 1, 1])
+
+    def test_state_binds_connection_without_storing_credentials(self):
+        client = RelationsClient()
+        client._http = types.SimpleNamespace(base_url='https://bridge-a', _token='secret-a')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'walk.json'
+            list(walk_relations(client, MODEL, [item(1)], state_path=path))
+            client._http.base_url = 'https://bridge-b'
+            with self.assertRaises(ValueError):
+                list(walk_relations(client, MODEL, [item(1)], state_path=path))
+            self.assertNotIn('secret-a', path.read_text(encoding='utf-8'))
 
 
 if __name__ == '__main__':
