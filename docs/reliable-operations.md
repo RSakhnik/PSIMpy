@@ -53,6 +53,11 @@ responses only; it has not been exercised against a production BIM model.
   filesystems; validate that storage before using it for critical exports.
   `Checkpoints` writes a SHA-256 sidecar for completed JSON results and
   re-fetches a result whose sidecar or content is missing or inconsistent.
+  For properties and relations, a semantically incomplete response is never
+  cached as complete. The next call uses a new task and request ID, with at
+  most three incomplete responses per checkpoint. After that, start a new
+  checkpoint session in a separate directory only after investigating the
+  reported incomplete result.
 * `EventJournal` records REST and direct Pilot transport attempts, including
   failures before a successful retry. The journal does not yet cover every
   worker/Manager lifecycle transition. `SessionProfile` reports

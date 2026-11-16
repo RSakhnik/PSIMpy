@@ -106,6 +106,15 @@ class Checkpoints:
         state = json.loads(state_path.read_text()) if state_path.exists() and not refresh_completed else {"request_id": str(uuid.uuid4())}
         if spatial and state.get('spatial_incomplete'):
             state = {"request_id": str(uuid.uuid4())}
+        if state.get('batch_incomplete'):
+            if state.get('incomplete_attempts', 0) >= 3:
+                raise IncompleteResult('Repeated incomplete batch responses; start a new checkpoint session', state)
+            state = {'request_id': str(uuid.uuid4()),
+                     'incomplete_attempts': state.get('incomplete_attempts', 0)}
+        def mark_incomplete():
+            state['batch_incomplete'] = True
+            state['incomplete_attempts'] = state.get('incomplete_attempts', 0) + 1
+            _atomic_json(state_path, state)
         for attempt in range(2):
             _atomic_json(state_path, state)
             if not state.get("task_id"):
@@ -122,7 +131,12 @@ class Checkpoints:
                     continue
                 raise
             if payload.get('ModelVersionUtc'):
-                ExportSnapshot(payload['ModelVersionUtc']).accept(result)
+                try:
+                    ExportSnapshot(payload['ModelVersionUtc']).accept(result)
+                except IncompleteResult:
+                    if operation in ('load-element-properties', 'get-element-relations'):
+                        mark_incomplete()
+                    raise
             if spatial:
                 from .spatial import _complete
                 if not _complete(result, payload['ElementIds']):
@@ -132,6 +146,8 @@ class Checkpoints:
             if _batch_complete(operation, payload, result):
                 _atomic_json(result_path, result)
                 _atomic_json(checksum_path, {'Sha256': hashlib.sha256(result_path.read_bytes()).hexdigest()})
+            elif operation in ('load-element-properties', 'get-element-relations'):
+                mark_incomplete()
             return result
 
 def select_parts(context, *, project=None, name_contains=None, model_key=None, allow_partial=False):

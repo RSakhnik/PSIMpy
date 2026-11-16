@@ -123,6 +123,32 @@ class BulkTests(unittest.TestCase):
                     else:
                         list(iter_relations(client,MODEL,[element],checkpoints=cp))
 
+    def test_checkpoint_retries_incomplete_batch_with_new_task_and_finite_budget(self):
+        element={'ModelPartId':PART,'ElementId':MODEL}
+        payload={'ElementIds':[element], 'ModelVersionUtc':'2026-01-01T00:00:00Z'}
+        client=FakeClient()
+        responses=[{'Elements':[]},
+                   {'Elements':[element], 'ModelVersionUtc':payload['ModelVersionUtc']}]
+        client.run=lambda *args, **kwargs: responses.pop(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            cp=Checkpoints(client,tmp)
+            with self.assertRaises(IncompleteResult):
+                cp.run('load-element-properties',payload)
+            self.assertEqual(len(cp.run('load-element-properties',payload)['Elements']),1)
+            self.assertEqual(client.posts,2)
+            self.assertEqual(len(cp.run('load-element-properties',payload)['Elements']),1)
+            self.assertEqual(client.posts,2)
+
+        client=FakeClient()
+        client.run=lambda *args, **kwargs: {'Elements':[], 'ModelVersionUtc':payload['ModelVersionUtc']}
+        with tempfile.TemporaryDirectory() as tmp:
+            cp=Checkpoints(client,tmp)
+            for _ in range(3):
+                self.assertEqual(cp.run('load-element-properties',payload)['Elements'],[])
+            with self.assertRaises(IncompleteResult):
+                cp.run('load-element-properties',payload)
+            self.assertEqual(client.posts,3)
+
     def test_missing_global_id_and_single_relation_truncation_fail(self):
         client=FakeClient()
         client.run=lambda *a,**kw:{'Elements':[], 'Truncated':True}
