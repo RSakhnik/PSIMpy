@@ -60,6 +60,9 @@ responses only; it has not been exercised against a production BIM model.
   first-attempt success and a labeled estimate of potentially lost work when
   prior-attempt processed-source counts are available. It does not present
   unmeasured reprocessing as zero.
+  A malformed JSON body or an application error carried in an HTTP success
+  response produces a separate `response_validation` failure event sharing
+  the HTTP operation ID; the session profile treats it as an unfinished call.
 * Schema sampling can stop because the search was exhausted, a budget was
   reached, or new schemas stopped appearing in the sampled groups. Only
   exhaustion plus loading every searched element is marked as a complete

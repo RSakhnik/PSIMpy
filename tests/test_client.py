@@ -166,6 +166,19 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(events[0]['SessionId'],events[1]['SessionId'])
             self.assertNotIn('test-secret',path.read_text(encoding='utf-8'))
             self.assertIs(client._http.fork().journal,client._http.journal)
+    def test_jsonl_journal_records_invalid_body_after_http_success(self):
+        type(self).handler=staticmethod(lambda *a:(200,{},b'{broken'))
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'events.jsonl'
+            client=BimBridge(self.url,token='test-secret',retries=0,event_journal_path=path)
+            with self.assertRaises(BimBridgeError) as caught:
+                client.health()
+            self.assertEqual(caught.exception.code,'INVALID_RESPONSE')
+            events=[json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+            self.assertEqual([e['Success'] for e in events],[True,False])
+            self.assertEqual(events[1]['EventType'],'response_validation')
+            self.assertEqual(events[1]['ErrorCode'],'INVALID_RESPONSE')
+            self.assertEqual(events[0]['OperationId'],events[1]['OperationId'])
     def test_gzip_magic_and_limit(self):
         zipped=gzip.compress(json.dumps({'x':'я'*100}).encode())
         type(self).handler=staticmethod(lambda *a:(200,{},zipped))

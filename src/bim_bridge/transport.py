@@ -64,7 +64,7 @@ class Transport:
             return BimBridgeError(f"HTTP_{status}", "Ответ сервера не содержит JSON ошибки",
                 status_code=status, retryable=status in (429, 502, 503, 504))
 
-    def open(self, method, path, payload=None, *, headers=None):
+    def open(self, method, path, payload=None, *, headers=None, operation_id=None):
         if not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
             raise ValueError("Нужен относительный путь API")
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -72,7 +72,7 @@ class Transport:
         if data is not None:
             headers["Content-Type"] = "application/json; charset=utf-8"
         attempts = self.retries + 1 if method == "GET" else 1
-        operation_id = str(uuid.uuid4())
+        operation_id = operation_id or str(uuid.uuid4())
         task_id = path.split('/')[2] if path.startswith('/tasks/') and len(path.split('/')) > 2 else None
         def record(event, began):
             event.update(OperationId=operation_id, Operation=method + ' ' + path,
@@ -93,7 +93,7 @@ class Transport:
             delay = self._retry_delay(attempt) if attempt + 1 < attempts else 0
             try:
                 result = self._opener.open(urllib.request.Request(self.base_url + path, data, headers, method=method), timeout=self.timeout)
-                record(dict(Attempt=attempt+1, RetryCount=attempt,
+                record(dict(EventType='http_attempt', Attempt=attempt+1, RetryCount=attempt,
                             NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
                             RetryWaitMs=0, Success=True, ErrorCode=None,
                             HttpStatus=getattr(result, 'status', None), Retryable=False), began)
@@ -103,7 +103,7 @@ class Transport:
                     error = self._error(exc, exc.code)
                 error_code = error.code
                 retry = exc.code in (429, 502, 503, 504) and attempt + 1 < attempts
-                record(dict(Attempt=attempt+1, RetryCount=attempt,
+                record(dict(EventType='http_attempt', Attempt=attempt+1, RetryCount=attempt,
                             NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
                             RetryWaitMs=delay*1000 if retry else 0,
                             Success=False, ErrorCode=error_code,
@@ -111,7 +111,7 @@ class Transport:
                 if exc.code not in (429, 502, 503, 504) or attempt + 1 == attempts:
                     raise error from None
             except (urllib.error.URLError, TimeoutError, OSError):
-                record(dict(Attempt=attempt+1, RetryCount=attempt,
+                record(dict(EventType='http_attempt', Attempt=attempt+1, RetryCount=attempt,
                             NetworkWallMs=(time.perf_counter_ns()-started)/1e6,
                             RetryWaitMs=delay*1000,
                             Success=False, ErrorCode='TRANSPORT_ERROR',
@@ -123,22 +123,37 @@ class Transport:
             time.sleep(delay)
 
     def json(self, method, path, payload=None):
-        with self.open(method, path, payload) as response:
-            raw = response.read(self.max_json_bytes + 1)
-        if len(raw) > self.max_json_bytes:
-            raise BimBridgeError("RESULT_TOO_LARGE", "Используйте Task.download() для большого результата")
-        if raw.startswith(b"\x1f\x8b"):
-            with gzip.GzipFile(fileobj=io.BytesIO(raw)) as zipped:
-                raw = zipped.read(self.max_json_bytes + 1)
-            if len(raw) > self.max_json_bytes:
-                raise BimBridgeError("RESULT_TOO_LARGE", "Распакованный JSON превышает лимит клиента")
+        operation_id = str(uuid.uuid4())
+        opened = False
         try:
-            result = json.loads(raw.decode("utf-8-sig")) if raw else {}
-        except (ValueError, UnicodeError):
-            raise BimBridgeError("INVALID_RESPONSE", "Ожидался JSON. Для файла используйте download()") from None
-        if isinstance(result, dict) and result.get("Error"):
-            error = result["Error"]
-            raise BimBridgeError(error.get("Code", "API_ERROR"), str(error.get("Message", "Ошибка API")).replace(self._token, "[REDACTED]"), retryable=bool(error.get("IsRetryable")))
+            with self.open(method, path, payload, operation_id=operation_id) as response:
+                opened = True
+                raw = response.read(self.max_json_bytes + 1)
+            if len(raw) > self.max_json_bytes:
+                raise BimBridgeError("RESULT_TOO_LARGE", "Используйте Task.download() для большого результата")
+            if raw.startswith(b"\x1f\x8b"):
+                try:
+                    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as zipped:
+                        raw = zipped.read(self.max_json_bytes + 1)
+                except (OSError, EOFError):
+                    raise BimBridgeError("INVALID_RESPONSE", "Повреждённый gzip JSON") from None
+                if len(raw) > self.max_json_bytes:
+                    raise BimBridgeError("RESULT_TOO_LARGE", "Распакованный JSON превышает лимит клиента")
+            try:
+                result = json.loads(raw.decode("utf-8-sig")) if raw else {}
+            except (ValueError, UnicodeError):
+                raise BimBridgeError("INVALID_RESPONSE", "Ожидался JSON. Для файла используйте download()") from None
+            if isinstance(result, dict) and result.get("Error"):
+                error = result["Error"]
+                raise BimBridgeError(error.get("Code", "API_ERROR"), str(error.get("Message", "Ошибка API")).replace(self._token, "[REDACTED]"), retryable=bool(error.get("IsRetryable")))
+        except BimBridgeError as error:
+            journal = getattr(self, 'journal', None)
+            if opened and journal:
+                journal(dict(EventType='response_validation', OperationId=operation_id,
+                             Operation=method + ' ' + path, Success=False,
+                             ErrorCode=error.code, Retryable=error.retryable,
+                             ClientRequestId=payload.get('clientRequestId') if isinstance(payload, dict) else None))
+            raise
         return result
 
     def rpc(self, method, **arguments):

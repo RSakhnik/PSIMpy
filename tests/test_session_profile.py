@@ -7,6 +7,21 @@ from bim_bridge import EventJournal, SessionProfile
 
 
 class SessionProfileTests(unittest.TestCase):
+    def test_invalid_body_is_unfinished_operation(self):
+        events=[{'SessionId':'s','OperationId':'one','EventType':'http_attempt',
+                 'Success':True,'NetworkWallMs':1},
+                {'SessionId':'s','OperationId':'one','EventType':'response_validation',
+                 'Success':False,'ErrorCode':'INVALID_RESPONSE'}]
+        data=SessionProfile(events).data
+        self.assertEqual(data['Operations'],1)
+        self.assertEqual(data['UnfinishedOperations'],1)
+        self.assertEqual(data['ErrorCounts']['INVALID_RESPONSE'],1)
+        self.assertIsNone(data['FirstAttemptSuccessRate'])
+        recovered=SessionProfile(events+[{'SessionId':'s','OperationId':'one',
+            'EventType':'http_attempt','Success':True}]).data
+        self.assertEqual(recovered['UnfinishedOperations'],0)
+        self.assertEqual(recovered['RecoveredOperations'],1)
+
     def test_parallel_intervals_and_recovered_error(self):
         events = [
             dict(SessionId='s', OperationId='a', StartTime='2026-01-01T00:00:00Z',

@@ -51,10 +51,15 @@ class SessionProfile:
             if key:
                 operations[key].append(event)
         failures = Counter(e.get('ErrorCode') or 'UNKNOWN' for e in self.events if e.get('Success') is False)
-        completed = [items for items in operations.values() if any(e.get('Success') for e in items)]
+        def succeeded(items):
+            outcomes = [e['Success'] for e in items if e.get('Success') is not None]
+            return bool(outcomes) and outcomes[-1] is True
+        completed = [items for items in operations.values()
+                     if any(e.get('Success') for e in items) and succeeded(items)]
         recovered = [items for items in completed if any(e.get('Success') is False for e in items)]
         first_try = [items for items in completed if items[0].get('Success') is True]
-        unfinished = [items for items in operations.values() if not any(e.get('Success') for e in items)]
+        unfinished = [items for items in operations.values()
+                      if not any(e.get('Success') for e in items) or not succeeded(items)]
         wall = max(end for _, end in timed) - min(start for start, _ in timed) if timed else None
         elements = sum(e.get('ElementCount', 0) for e in self.events if e.get('Success') and
                        isinstance(e.get('ElementCount'), (int, float)))
