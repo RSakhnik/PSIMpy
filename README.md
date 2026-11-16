@@ -591,6 +591,9 @@ Keep both the report and adjacent search state and SQLite ledger together.
 ```python
 client = BimBridge(url, token=token,
     event_journal_path="/content/drive/MyDrive/psimpy-events.jsonl")
+# The direct Pilot connection accepts the same journal option:
+# client = BimBridge.from_pilot(server_database, login, password,
+#     event_journal_path="/content/drive/MyDrive/psimpy-events.jsonl")
 ```
 
 Each HTTP attempt is appended as a separate fsynced JSONL event, including

@@ -48,9 +48,9 @@ responses only; it has not been exercised against a production BIM model.
   filesystems; validate that storage before using it for critical exports.
   `Checkpoints` writes a SHA-256 sidecar for completed JSON results and
   re-fetches a result whose sidecar or content is missing or inconsistent.
-* `EventJournal` records REST transport attempts, including failures before a
-  successful retry. Pilot direct transport and every worker/Manager lifecycle
-  transition are not yet represented in this journal. `SessionProfile` reports
+* `EventJournal` records REST and direct Pilot transport attempts, including
+  failures before a successful retry. The journal does not yet cover every
+  worker/Manager lifecycle transition. `SessionProfile` reports
   overlapping network intervals without adding them into wall time, and
   leaves unavailable worker/queue metrics as unknown. Existing
   `ParallelExport` manifests and `ExportProfile` retain their own richer

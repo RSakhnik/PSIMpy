@@ -88,12 +88,16 @@ class Task:
 
 class BimBridge:
     @classmethod
-    def from_pilot(cls, server_database, login, password, *, task_timeout=1800, poll_interval=2, **transport_options):
+    def from_pilot(cls, server_database, login, password, *, task_timeout=1800,
+                   poll_interval=2, event_journal_path=None, **transport_options):
         """Pilot Custom API directly; suitable for Colab with .NET SDK/runtime."""
         from .pilot import PilotTransport
         if task_timeout<=0 or poll_interval<=0:raise ValueError('Таймаут и интервал должны быть положительными')
         instance=cls.__new__(cls)
         instance._http=PilotTransport(server_database,login,password,**transport_options)
+        if event_journal_path is not None:
+            from .event_journal import EventJournal
+            instance._http.journal = EventJournal(event_journal_path)
         instance.task_timeout,instance.poll_interval=task_timeout,poll_interval
         instance.submit_retries=0
         return instance

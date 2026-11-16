@@ -127,6 +127,23 @@ class ChunkDownloadTests(unittest.TestCase):
 
 
 class PilotAdapterTests(unittest.TestCase):
+    def test_pilot_journal_keeps_failure_after_success(self):
+        from bim_bridge import EventJournal
+        transport=PilotTransport('pilot/db','user','not-real',adapter='unused.dll',retries=1)
+        transport._process=type('Process',(),{'poll':lambda self:None})()
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'pilot.jsonl'
+            transport.journal=EventJournal(path)
+            failure=BimBridgeError('PILOT_TRANSPORT_TIMEOUT','delayed',retryable=True)
+            with patch.object(transport,'_exchange',side_effect=[failure,{'State':'READY'}]), \
+                 patch.object(transport,'close'), patch('bim_bridge.pilot.time.sleep'):
+                transport.rpc('GetTaskStatus',TaskId=TASK)
+            rows=[json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual([row['Success'] for row in rows],[False,True])
+            self.assertEqual(rows[0]['TaskId'],TASK)
+            self.assertNotIn('not-real',path.read_text())
+            self.assertIs(transport.fork().journal,transport.journal)
+
     def test_pilot_retry_attempts_record_wait_and_error(self):
         transport=PilotTransport('pilot/db','user','not-real',adapter='unused.dll',retries=1)
         transport._process=type('Process',(),{'poll':lambda self:None})()

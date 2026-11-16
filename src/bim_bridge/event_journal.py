@@ -9,7 +9,8 @@ import uuid
 
 _FIELDS = frozenset(('SessionId', 'OperationId', 'TaskId', 'ClientRequestId',
     'Operation', 'ModelKey', 'ModelVersionUtc', 'WorkerInstanceId', 'BatchId',
-    'StartTime', 'EndTime', 'NetworkWallMs', 'RetryWaitMs', 'Attempt',
+    'StartTime', 'EndTime', 'NetworkWallMs', 'TransportWaitMs', 'ConnectWallMs',
+    'RetryWaitMs', 'Attempt',
     'RetryCount', 'Success', 'ErrorCode', 'HttpStatus', 'Retryable',
     'PayloadBytes', 'ResultBytes', 'ElementCount', 'RecoveryReason', 'RecoveryStrategy',
     'ReprocessedElements', 'LostWork'))
